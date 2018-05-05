@@ -1,0 +1,323 @@
+diff -uNrp ./x264.001/common/base.c ./x264.002/common/base.c
+--- ./x264.001/common/base.c	2018-05-04 23:51:02.562976100 +0300
++++ ./x264.002/common/base.c	2018-05-04 23:55:58.269460800 +0300
+@@ -362,6 +362,7 @@ void x264_param_default( x264_param_t *p
+     param->pf_log = x264_log_default;
+     param->p_log_private = NULL;
+     param->i_log_level = X264_LOG_INFO;
++    param->i_log_file_level = X264_LOG_INFO;
+ 
+     /* */
+     param->analyse.intra = X264_ANALYSE_I4x4 | X264_ANALYSE_I8x8;
+@@ -1123,6 +1124,13 @@ int x264_param_parse( x264_param_t *p, c
+     }
+     OPT("log")
+         p->i_log_level = atoi(value);
++    OPT("log-file")
++        p->psz_log_file = strdup(value);
++    OPT("log-file-level")
++        if( !parse_enum( value, x264_log_level_names, &p->i_log_file_level ) )
++            p->i_log_file_level += X264_LOG_NONE;
++        else
++            p->i_log_file_level = atoi(value);
+     OPT("dump-yuv")
+         p->psz_dump_yuv = strdup(value);
+     OPT2("analyse", "partitions")
+diff -uNrp ./x264.001/common/common.c ./x264.002/common/common.c
+--- ./x264.001/common/common.c	2018-05-03 14:47:09.832657600 +0300
++++ ./x264.002/common/common.c	2018-05-04 23:56:12.646780600 +0300
+@@ -26,6 +26,8 @@
+ 
+ #include "common.h"
+ 
++static void x264_log_file( char *, int, const char *, va_list );
++
+ /****************************************************************************
+  * x264_log:
+  ****************************************************************************/
+@@ -41,4 +43,42 @@ void x264_log( x264_t *h, int i_level, c
+             h->param.pf_log( h->param.p_log_private, i_level, psz_fmt, arg );
+         va_end( arg );
+     }
++
++    if( h && h->param.psz_log_file && i_level <= h->param.i_log_file_level )
++    {
++        va_list arg;
++        va_start( arg, psz_fmt );
++        x264_log_file( h->param.psz_log_file, i_level, psz_fmt, arg );
++        va_end( arg );
++    }
++}
++
++static void x264_log_file( char *p_file_name, int i_level, const char *psz_fmt, va_list arg )
++{
++    char *psz_prefix;
++    switch( i_level )
++    {
++        case X264_LOG_ERROR:
++            psz_prefix = "error";
++            break;
++        case X264_LOG_WARNING:
++            psz_prefix = "warning";
++            break;
++        case X264_LOG_INFO:
++            psz_prefix = "info";
++            break;
++        case X264_LOG_DEBUG:
++            psz_prefix = "debug";
++            break;
++        default:
++            psz_prefix = "unknown";
++            break;
++    }
++    FILE *p_log_file = x264_fopen( p_file_name, "ab" );
++    if( p_log_file )
++    {
++        fprintf( p_log_file, "x264 [%s]: ", psz_prefix );
++        vfprintf( p_log_file, psz_fmt, arg );
++        fclose( p_log_file );
++    }
+ }
+diff -uNrp ./x264.001/encoder/encoder.c ./x264.002/encoder/encoder.c
+--- ./x264.001/encoder/encoder.c	2018-05-04 22:49:47.734211900 +0300
++++ ./x264.002/encoder/encoder.c	2018-05-04 23:56:31.155999800 +0300
+@@ -1095,7 +1095,7 @@ static int validate_parameters( x264_t *
+     if( h->param.rc.f_aq_strength == 0 )
+         h->param.rc.i_aq_mode = 0;
+ 
+-    if( h->param.i_log_level < X264_LOG_INFO )
++    if( h->param.i_log_level < X264_LOG_INFO && (!h->param.psz_log_file || h->param.i_log_file_level < X264_LOG_INFO) )
+     {
+         h->param.analyse.b_psnr = 0;
+         h->param.analyse.b_ssim = 0;
+@@ -2883,7 +2883,7 @@ cont:
+ 
+         int b_intra = IS_INTRA( h->mb.i_type );
+         int b_skip = IS_SKIP( h->mb.i_type );
+-        if( h->param.i_log_level >= X264_LOG_INFO || h->param.rc.b_stat_write )
++        if( h->param.i_log_level >= X264_LOG_INFO || (h->param.psz_log_file && h->param.i_log_file_level >= X264_LOG_INFO) || h->param.rc.b_stat_write )
+         {
+             if( !b_intra && !b_skip && !IS_DIRECT( h->mb.i_type ) )
+             {
+@@ -2903,7 +2903,7 @@ cont:
+             }
+         }
+ 
+-        if( h->param.i_log_level >= X264_LOG_INFO )
++        if( h->param.i_log_level >= X264_LOG_INFO || (h->param.psz_log_file && h->param.i_log_file_level >= X264_LOG_INFO) )
+         {
+             if( h->mb.i_cbp_luma | h->mb.i_cbp_chroma )
+             {
+diff -uNrp ./x264.001/x264.c ./x264.002/x264.c
+--- ./x264.001/x264.c	2018-05-04 23:50:05.210314100 +0300
++++ ./x264.002/x264.c	2018-05-04 23:56:47.641596700 +0300
+@@ -266,9 +266,32 @@ static int  parse( int argc, char **argv
+ static int  encode( x264_param_t *param, cli_opt_t *opt );
+ 
+ /* logging and printing for within the cli system */
++static char *psz_log_file       = NULL;
++static int   cli_log_file_level = -1;
++
++static inline void x264_log_done()
++{
++    if( psz_log_file ) free( psz_log_file );
++    psz_log_file = NULL;
++}
++
++static inline void x264_log_init( const char *file_name )
++{
++    x264_log_done();
++    psz_log_file = strdup( file_name );
++}
++
+ static int cli_log_level;
+ void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+ {
++    if( psz_log_file && *psz_log_file && i_level <= cli_log_file_level )
++    {
++        va_list arg;
++        va_start( arg, fmt );
++        x264_cli_log_file( psz_log_file, i_level, fmt, arg );
++        va_end( arg );
++    }
++
+     if( i_level > cli_log_level )
+         return;
+     char *s_level;
+@@ -297,8 +320,46 @@ void x264_cli_log( const char *name, int
+     va_end( arg );
+ }
+ 
++void x264_cli_log_file( char *p_file_name, int i_level, const char *psz_fmt, va_list arg )
++{
++    char *psz_prefix;
++    switch( i_level )
++    {
++        case X264_LOG_ERROR:
++            psz_prefix = "error";
++            break;
++        case X264_LOG_WARNING:
++            psz_prefix = "warning";
++            break;
++        case X264_LOG_INFO:
++            psz_prefix = "info";
++            break;
++        case X264_LOG_DEBUG:
++            psz_prefix = "debug";
++            break;
++        default:
++            psz_prefix = "unknown";
++            break;
++    }
++    FILE *p_log_file = x264_fopen( p_file_name, "ab" );
++    if( p_log_file )
++    {
++        fprintf( p_log_file, "x264 [%s]: ", psz_prefix );
++        vfprintf( p_log_file, psz_fmt, arg );
++        fclose( p_log_file );
++    }
++ }
++
+ void x264_cli_printf( int i_level, const char *fmt, ... )
+ {
++    if( psz_log_file && *psz_log_file )
++    {
++        va_list arg;
++        va_start( arg, fmt );
++        x264_cli_log_file( psz_log_file, X264_LOG_INFO, fmt, arg );
++        va_end( arg );
++    }
++
+     if( i_level > cli_log_level )
+         return;
+     va_list arg;
+@@ -400,6 +461,7 @@ int main( int argc, char **argv )
+     free( argv );
+ #endif
+ 
++    x264_log_done();
+     return ret;
+ }
+ 
+@@ -914,8 +976,12 @@ static void help( x264_param_t *defaults
+     H1( "      --no-progress           Don't show the progress indicator while encoding\n" );
+     H0( "      --quiet                 Quiet Mode\n" );
+     H1( "      --log-level <string>    Specify the maximum level of logging [\"%s\"]\n"
+-        "                                  - %s\n", strtable_lookup( log_level_names, cli_log_level - X264_LOG_NONE ),
+-                                       stringify_names( buf, log_level_names ) );
++        "                                  - %s\n", strtable_lookup( x264_log_level_names, cli_log_level - X264_LOG_NONE ),
++                                       stringify_names( buf, x264_log_level_names ) );
++    H1( "      --log-file <string>     Save log to file\n" );
++    H1( "      --log-file-level <int>  Log-file level information [\"%s\"]\n"
++        "                                  - %s\n", strtable_lookup( x264_log_level_names, defaults->i_log_file_level - X264_LOG_NONE ),
++                                       stringify_names( buf, x264_log_level_names ) );
+     H1( "      --psnr                  Enable PSNR computation\n" );
+     H1( "      --ssim                  Enable SSIM computation\n" );
+     H1( "      --threads <integer>     Force a specific number of threads\n" );
+@@ -978,6 +1044,8 @@ typedef enum
+     OPT_TIMEBASE,
+     OPT_PULLDOWN,
+     OPT_LOG_LEVEL,
++    OPT_LOG_FILE,
++    OPT_LOG_FILE_LEVEL,
+     OPT_VIDEO_FILTER,
+     OPT_INPUT_FMT,
+     OPT_INPUT_RES,
+@@ -1111,6 +1179,8 @@ static struct option long_options[] =
+     { "quiet",             no_argument, NULL, OPT_QUIET },
+     { "verbose",           no_argument, NULL, 'v' },
+     { "log-level",   required_argument, NULL, OPT_LOG_LEVEL },
++    { "log-file",          required_argument, NULL, OPT_LOG_FILE },
++    { "log-file-level",    required_argument, NULL, OPT_LOG_FILE_LEVEL },
+     { "no-progress",       no_argument, NULL, OPT_NOPROGRESS },
+     { "dump-yuv",    required_argument, NULL, 0 },
+     { "sps-id",      required_argument, NULL, 0 },
+@@ -1382,6 +1452,7 @@ static int parse( int argc, char **argv,
+ 
+     x264_param_default( &defaults );
+     cli_log_level = defaults.i_log_level;
++    cli_log_file_level = defaults.i_log_file_level;
+ 
+     memset( &input_opt, 0, sizeof(cli_input_opt_t) );
+     memset( &output_opt, 0, sizeof(cli_output_opt_t) );
+@@ -1475,12 +1546,21 @@ static int parse( int argc, char **argv,
+                 cli_log_level = param->i_log_level = X264_LOG_DEBUG;
+                 break;
+             case OPT_LOG_LEVEL:
+-                if( !parse_enum_value( optarg, log_level_names, &cli_log_level ) )
++                if( !parse_enum_value( optarg, x264_log_level_names, &cli_log_level ) )
+                     cli_log_level += X264_LOG_NONE;
+                 else
+                     cli_log_level = atoi( optarg );
+                 param->i_log_level = cli_log_level;
+                 break;
++            case OPT_LOG_FILE:
++                x264_log_init( optarg );
++                goto generic_option;
++            case OPT_LOG_FILE_LEVEL:
++                if( !parse_enum_value( optarg, x264_log_level_names, &cli_log_file_level ) )
++                    cli_log_file_level += X264_LOG_NONE;
++                else
++                    cli_log_file_level = atoi( optarg );
++                goto generic_option;
+             case OPT_NOPROGRESS:
+                 opt->b_progress = 0;
+                 break;
+@@ -1658,7 +1738,7 @@ generic_option:
+     {
+         if( thread_input->open_file( NULL, &opt->hin, &info, NULL ) )
+         {
+-            fprintf( stderr, "x264 [error]: threaded input failed\n" );
++            x264_cli_log( "x264", X264_LOG_ERROR, "threaded input failed\n" );
+             return -1;
+         }
+         cli_input = *thread_input;
+@@ -2043,7 +2123,7 @@ fail:
+     fprintf( stderr, "\n" );
+ 
+     if( b_ctrl_c )
+-        fprintf( stderr, "aborted at input frame %d, output frame %d\n", opt->i_seek + i_frame, i_frame_output );
++        x264_cli_printf( X264_LOG_INFO, "aborted at input frame %d, output frame %d\n", opt->i_seek + i_frame, i_frame_output );
+ 
+     cli_output.close_file( opt->hout, largest_pts, second_largest_pts );
+     opt->hout = NULL;
+@@ -2053,7 +2133,7 @@ fail:
+         double fps = (double)i_frame_output * (double)1000000 /
+                      (double)( i_end - i_start );
+ 
+-        fprintf( stderr, "encoded %d frames, %.2f fps, %.2f kb/s\n", i_frame_output, fps,
++        x264_cli_printf( X264_LOG_INFO, "encoded %d frames, %.2f fps, %.2f kb/s\n", i_frame_output, fps,
+                  (double) i_file * 8 / ( 1000 * duration ) );
+     }
+ 
+diff -uNrp ./x264.001/x264.h ./x264.002/x264.h
+--- ./x264.001/x264.h	2018-05-03 14:47:09.948072800 +0300
++++ ./x264.002/x264.h	2018-05-04 23:56:55.260173300 +0300
+@@ -215,6 +215,7 @@ static const char * const x264_transfer_
+ static const char * const x264_colmatrix_names[] = { "GBR", "bt709", "undef", "", "fcc", "bt470bg", "smpte170m", "smpte240m", "YCgCo", "bt2020nc", "bt2020c",
+                                                      "smpte2085", "chroma-derived-nc", "chroma-derived-c", "ICtCp", 0 };
+ static const char * const x264_nal_hrd_names[] = { "none", "vbr", "cbr", 0 };
++static const char * const x264_log_level_names[] = { "none", "error", "warning", "info", "debug", 0 };
+ 
+ /* Colorspace type */
+ #define X264_CSP_MASK           0x00ff  /* */
+@@ -363,6 +364,8 @@ typedef struct x264_param_t
+     void        (*pf_log)( void *, int i_level, const char *psz, va_list );
+     void        *p_log_private;
+     int         i_log_level;
++    int         i_log_file_level;
++    char        *psz_log_file;  /* filename (in UTF-8) of log-file */
+     int         b_full_recon;   /* fully reconstruct frames, even when not necessary for encoding.  Implied by psz_dump_yuv */
+     char        *psz_dump_yuv;  /* filename (in UTF-8) for reconstructed frames */
+ 
+diff -uNrp ./x264.001/x264cli.h ./x264.002/x264cli.h
+--- ./x264.001/x264cli.h	2018-05-03 14:47:09.949071900 +0300
++++ ./x264.002/x264cli.h	2018-05-04 23:57:16.037007100 +0300
+@@ -61,6 +61,7 @@ static inline char *get_filename_extensi
+ }
+ 
+ void x264_cli_log( const char *name, int i_level, const char *fmt, ... );
++void x264_cli_log_file( char *p_file_name, int i_level, const char *psz_fmt, va_list arg );
+ void x264_cli_printf( int i_level, const char *fmt, ... );
+ 
+ #ifdef _WIN32
