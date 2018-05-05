@@ -1,0 +1,96 @@
+diff -uNrp ./x264.opts1/common/base.c ./x264.opts2/common/base.c
+--- ./x264.opts1/common/base.c	2018-05-04 19:38:38.702651100 +0300
++++ ./x264.opts2/common/base.c	2018-05-04 19:39:02.143412100 +0300
+@@ -1244,6 +1244,8 @@ int x264_param_parse( x264_param_t *p, c
+         p->rc.i_aq_mode = atoi(value);
+     OPT("aq-strength")
+         p->rc.f_aq_strength = atof(value);
++    OPT("fade-compensate")
++        p->rc.f_fade_compensate = atof(value);
+     OPT("pass")
+     {
+         int pass = x264_clip3( atoi(value), 0, 3 );
+@@ -1382,7 +1384,10 @@ char *x264_param2string( x264_param_t *p
+     s += sprintf( s, " subme=%d", p->analyse.i_subpel_refine );
+     s += sprintf( s, " psy=%d", p->analyse.b_psy );
+     if( p->analyse.b_psy )
+-        s += sprintf( s, " psy_rd=%.2f:%.2f", p->analyse.f_psy_rd, p->analyse.f_psy_trellis );
++    {
++        s += sprintf( s, " fade_compensate=%.2f", p->rc.f_fade_compensate );
++         s += sprintf( s, " psy_rd=%.2f:%.2f", p->analyse.f_psy_rd, p->analyse.f_psy_trellis );
++    }
+     s += sprintf( s, " mixed_ref=%d", p->analyse.b_mixed_references );
+     s += sprintf( s, " me_range=%d", p->analyse.i_me_range );
+     s += sprintf( s, " chroma_me=%d", p->analyse.b_chroma_me );
+diff -uNrp ./x264.opts1/encoder/encoder.c ./x264.opts2/encoder/encoder.c
+--- ./x264.opts1/encoder/encoder.c	2018-05-04 19:38:33.636593300 +0300
++++ ./x264.opts2/encoder/encoder.c	2018-05-04 19:39:02.149407400 +0300
+@@ -1124,10 +1124,15 @@ static int validate_parameters( x264_t *
+             x264_log( h, X264_LOG_WARNING, "--tune %s should be used if attempting to benchmark %s!\n", s, s );
+     }
+ 
++    if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_NONE )
++        h->param.rc.f_fade_compensate += 0.1;
++    if( !h->param.rc.b_mb_tree )
++        h->param.rc.f_fade_compensate = 0;
+     if( !h->param.analyse.b_psy )
+     {
+         h->param.analyse.f_psy_rd = 0;
+         h->param.analyse.f_psy_trellis = 0;
++        h->param.rc.f_fade_compensate = 0;
+     }
+     h->param.analyse.f_psy_rd = x264_clip3f( h->param.analyse.f_psy_rd, 0, 10 );
+     h->param.analyse.f_psy_trellis = x264_clip3f( h->param.analyse.f_psy_trellis, 0, 10 );
+diff -uNrp ./x264.opts1/encoder/slicetype.c ./x264.opts2/encoder/slicetype.c
+--- ./x264.opts1/encoder/slicetype.c	2018-05-04 19:47:15.672399600 +0300
++++ ./x264.opts2/encoder/slicetype.c	2018-05-04 19:47:16.695603800 +0300
+@@ -451,7 +451,7 @@ void x264_weights_analyse( x264_t *h, x2
+         else
+             SET_WEIGHT( weights[plane], 1, minscale, mindenom, minoff );
+ 
+-        if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_FAKE && weights[0].weightfn && !plane )
++        if( weights[0].weightfn && !plane )
+             fenc->f_weighted_cost_delta[i_delta_index] = (float)minscore / origscore;
+     }
+ 
+@@ -1023,7 +1023,7 @@ static void macroblock_tree_finish( x264
+     int fps_factor = round( CLIP_DURATION(average_duration) / CLIP_DURATION(frame->f_duration) * 256 / MBTREE_PRECISION );
+     float weightdelta = 0.0;
+     if( ref0_distance && frame->f_weighted_cost_delta[ref0_distance-1] > 0 )
+-        weightdelta = (1.0 - frame->f_weighted_cost_delta[ref0_distance-1]);
++        weightdelta = (1.0 - frame->f_weighted_cost_delta[ref0_distance-1]) * 10.0f * h->param.rc.f_fade_compensate;
+ 
+     /* Allow the strength to be adjusted via qcompress, since the two
+      * concepts are very similar. */
+Binary files ./x264.opts1/x264.7z and ./x264.opts2/x264.7z differ
+diff -uNrp ./x264.opts1/x264.c ./x264.opts2/x264.c
+--- ./x264.opts1/x264.c	2018-05-04 19:38:38.713642700 +0300
++++ ./x264.opts2/x264.c	2018-05-04 19:39:02.169391900 +0300
+@@ -815,6 +815,8 @@ static void help( x264_param_t *defaults
+         "                                  - 3: Auto-variance AQ with bias to dark scenes\n", defaults->rc.i_aq_mode );
+     H1( "      --aq-strength <float>   Reduces blocking and blurring in flat and\n"
+         "                              textured areas. [%.1f]\n", defaults->rc.f_aq_strength );
++    H1( "      --fade-compensate <float> Allocate more bits to fades [%.1f]\n", defaults->rc.f_fade_compensate );
++    H2( "                                  Approximate sane range: 0.0 - 1.0\n" );
+     H1( "\n" );
+     H0( "  -p, --pass <integer>        Enable multipass ratecontrol\n"
+         "                                  - 1: First pass, creates stats file\n"
+@@ -1155,6 +1157,7 @@ static struct option long_options[] =
+     { "no-dct-decimate",   no_argument, NULL, 0 },
+     { "aq-strength", required_argument, NULL, 0 },
+     { "aq-mode",     required_argument, NULL, 0 },
++    { "fade-compensate", required_argument, NULL, 0 },
+     { "deadzone-inter", required_argument, NULL, 0 },
+     { "deadzone-intra", required_argument, NULL, 0 },
+     { "level",       required_argument, NULL, 0 },
+diff -uNrp ./x264.opts1/x264.h ./x264.opts2/x264.h
+--- ./x264.opts1/x264.h	2018-05-04 19:38:38.724634000 +0300
++++ ./x264.opts2/x264.h	2018-05-04 19:39:02.174387800 +0300
+@@ -445,6 +445,7 @@ typedef struct x264_param_t
+ 
+         int         i_aq_mode;      /* psy adaptive QP. (X264_AQ_*) */
+         float       f_aq_strength;
++        float       f_fade_compensate; /* Give more bits to fades. */
+         int         b_mb_tree;      /* Macroblock-tree ratecontrol. */
+         int         i_lookahead;
+ 
