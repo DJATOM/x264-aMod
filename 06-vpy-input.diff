@@ -1,0 +1,1092 @@
+diff -uNrp ./x264.005/configure ./x264.006/configure
+--- ./x264.005/configure	2018-05-03 14:47:09.907104500 +0300
++++ ./x264.006/configure	2018-05-05 02:11:33.376000000 +0300
+@@ -47,6 +47,7 @@ Cross-compilation:
+   --sysroot=SYSROOT        root of cross-build tree
+ 
+ External library support:
++  --disable-vpy            disable vapoursynth support
+   --disable-avs            disable avisynth support
+   --disable-swscale        disable swscale support
+   --disable-lavf           disable libavformat support
+@@ -356,6 +357,7 @@ cli="yes"
+ cli_libx264="internal"
+ shared="no"
+ static="no"
++vpy="auto"
+ avs="auto"
+ lavf="auto"
+ ffms="auto"
+@@ -395,7 +397,7 @@ NL="
+ 
+ # list of all preprocessor HAVE values we can define
+ CONFIG_HAVE="MALLOC_H ALTIVEC ALTIVEC_H MMX ARMV6 ARMV6T2 NEON BEOSTHREAD POSIXTHREAD WIN32THREAD THREAD LOG2F SWSCALE \
+-             LAVF FFMS GPAC AVS GPL VECTOREXT INTERLACED CPU_COUNT OPENCL THP LSMASH X86_INLINE_ASM AS_FUNC INTEL_DISPATCHER \
++             LAVF FFMS GPAC AVS VPY GPL VECTOREXT INTERLACED CPU_COUNT OPENCL THP LSMASH X86_INLINE_ASM AS_FUNC INTEL_DISPATCHER \
+              MSA MMAP WINRT VSX ARM_INLINE_ASM STRTOK_R BITDEPTH8 BITDEPTH10"
+ 
+ # parse options
+@@ -436,6 +438,9 @@ for opt do
+         --disable-interlaced)
+             interlaced="no"
+             ;;
++        --disable-vpy)
++            vpy="no"
++            ;;
+         --disable-avs)
+             avs="no"
+             ;;
+@@ -1082,6 +1087,7 @@ if [ "$SYS" = "LINUX" -a \( "$ARCH" = "X
+ fi
+ 
+ if [ "$cli" = "no" ] ; then
++    vpy="no"
+     avs="no"
+     lavf="no"
+     ffms="no"
+@@ -1236,6 +1242,18 @@ if [ "$avs" = "auto" ] ; then
+     fi
+ fi
+ 
++if [ "$vpy" = "auto" ] ; then
++    vpy="yes"
++    define HAVE_VPY 1
++    if [ "$SYS" = "LINUX" -o "$SYS" = "MACOSX" ] ; then
++        VPY_LIBS="-lvapoursynth-script"
++        if [ "$avs" = "no" ] ; then
++            VPY_LIBS="-ldl $VPY_LIBS"
++        fi
++        LDFLAGSCLI="$VPY_LIBS $LDFLAGSCLI"
++    fi
++fi
++
+ cc_check "stdint.h" "" "uint32_t test_vec __attribute__ ((vector_size (16))) = {0,1,2,3};" && define HAVE_VECTOREXT
+ 
+ if [ "$pic" = "yes" ] ; then
+@@ -1541,6 +1559,7 @@ shared:        $shared
+ static:        $static
+ asm:           $asm
+ interlaced:    $interlaced
++vpy:           $vpy
+ avs:           $avs
+ lavf:          $lavf
+ ffms:          $ffms
+diff -uNrp ./x264.005/extras/VapourSynth.h ./x264.006/extras/VapourSynth.h
+--- ./x264.005/extras/VapourSynth.h	1970-01-01 03:00:00.000000000 +0300
++++ ./x264.006/extras/VapourSynth.h	2018-05-02 20:47:20.703578600 +0300
+@@ -0,0 +1,342 @@
++/*
++* Copyright (c) 2012-2017 Fredrik Mellbin
++*
++* This file is part of VapourSynth.
++*
++* VapourSynth is free software; you can redistribute it and/or
++* modify it under the terms of the GNU Lesser General Public
++* License as published by the Free Software Foundation; either
++* version 2.1 of the License, or (at your option) any later version.
++*
++* VapourSynth is distributed in the hope that it will be useful,
++* but WITHOUT ANY WARRANTY; without even the implied warranty of
++* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++* Lesser General Public License for more details.
++*
++* You should have received a copy of the GNU Lesser General Public
++* License along with VapourSynth; if not, write to the Free Software
++* Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++*/
++
++#ifndef VAPOURSYNTH_H
++#define VAPOURSYNTH_H
++
++#include <stdint.h>
++
++#define VAPOURSYNTH_API_MAJOR 3
++#define VAPOURSYNTH_API_MINOR 5
++#define VAPOURSYNTH_API_VERSION ((VAPOURSYNTH_API_MAJOR << 16) | (VAPOURSYNTH_API_MINOR))
++
++/* Convenience for C++ users. */
++#ifdef __cplusplus
++#    define VS_EXTERN_C extern "C"
++#    if __cplusplus >= 201103L || (defined(_MSC_VER) && _MSC_VER >= 1900)
++#        define VS_NOEXCEPT noexcept
++#    else
++#        define VS_NOEXCEPT
++#    endif
++#else
++#    define VS_EXTERN_C
++#    define VS_NOEXCEPT
++#endif
++
++#if defined(_WIN32) && !defined(_WIN64)
++#    define VS_CC __stdcall
++#else
++#    define VS_CC
++#endif
++
++/* And now for some symbol hide-and-seek... */
++#if defined(_WIN32) /* Windows being special */
++#    define VS_EXTERNAL_API(ret) VS_EXTERN_C __declspec(dllexport) ret VS_CC
++#elif defined(__GNUC__) && __GNUC__ >= 4
++#    define VS_EXTERNAL_API(ret) VS_EXTERN_C __attribute__((visibility("default"))) ret VS_CC
++#else
++#    define VS_EXTERNAL_API(ret) VS_EXTERN_C ret VS_CC
++#endif
++
++#if !defined(VS_CORE_EXPORTS) && defined(_WIN32)
++#    define VS_API(ret) VS_EXTERN_C __declspec(dllimport) ret VS_CC
++#else
++#    define VS_API(ret) VS_EXTERNAL_API(ret)
++#endif
++
++typedef struct VSFrameRef VSFrameRef;
++typedef struct VSNodeRef VSNodeRef;
++typedef struct VSCore VSCore;
++typedef struct VSPlugin VSPlugin;
++typedef struct VSNode VSNode;
++typedef struct VSFuncRef VSFuncRef;
++typedef struct VSMap VSMap;
++typedef struct VSAPI VSAPI;
++typedef struct VSFrameContext VSFrameContext;
++
++typedef enum VSColorFamily {
++    /* all planar formats */
++    cmGray   = 1000000,
++    cmRGB    = 2000000,
++    cmYUV    = 3000000,
++    cmYCoCg  = 4000000,
++    /* special for compatibility */
++    cmCompat = 9000000
++} VSColorFamily;
++
++typedef enum VSSampleType {
++    stInteger = 0,
++    stFloat = 1
++} VSSampleType;
++
++/* The +10 is so people won't be using the constants interchangably "by accident" */
++typedef enum VSPresetFormat {
++    pfNone = 0,
++
++    pfGray8 = cmGray + 10,
++    pfGray16,
++
++    pfGrayH,
++    pfGrayS,
++
++    pfYUV420P8 = cmYUV + 10,
++    pfYUV422P8,
++    pfYUV444P8,
++    pfYUV410P8,
++    pfYUV411P8,
++    pfYUV440P8,
++
++    pfYUV420P9,
++    pfYUV422P9,
++    pfYUV444P9,
++
++    pfYUV420P10,
++    pfYUV422P10,
++    pfYUV444P10,
++
++    pfYUV420P16,
++    pfYUV422P16,
++    pfYUV444P16,
++
++    pfYUV444PH,
++    pfYUV444PS,
++
++    pfYUV420P12,
++    pfYUV422P12,
++    pfYUV444P12,
++
++    pfYUV420P14,
++    pfYUV422P14,
++    pfYUV444P14,
++
++    pfRGB24 = cmRGB + 10,
++    pfRGB27,
++    pfRGB30,
++    pfRGB48,
++
++    pfRGBH,
++    pfRGBS,
++
++    /* special for compatibility, if you implement these in any filter I'll personally kill you */
++    /* I'll also change their ids around to break your stuff regularly */
++    pfCompatBGR32 = cmCompat + 10,
++    pfCompatYUY2
++} VSPresetFormat;
++
++typedef enum VSFilterMode {
++    fmParallel = 100, /* completely parallel execution */
++    fmParallelRequests = 200, /* for filters that are serial in nature but can request one or more frames they need in advance */
++    fmUnordered = 300, /* for filters that modify their internal state every request */
++    fmSerial = 400 /* for source filters and compatibility with other filtering architectures */
++} VSFilterMode;
++
++typedef struct VSFormat {
++    char name[32];
++    int id;
++    int colorFamily; /* see VSColorFamily */
++    int sampleType; /* see VSSampleType */
++    int bitsPerSample; /* number of significant bits */
++    int bytesPerSample; /* actual storage is always in a power of 2 and the smallest possible that can fit the number of bits used per sample */
++
++    int subSamplingW; /* log2 subsampling factor, applied to second and third plane */
++    int subSamplingH;
++
++    int numPlanes; /* implicit from colorFamily */
++} VSFormat;
++
++typedef enum VSNodeFlags {
++    nfNoCache    = 1,
++    nfIsCache    = 2,
++    nfMakeLinear = 4 /* api 3.3 */
++} VSNodeFlags;
++
++typedef enum VSPropTypes {
++    ptUnset = 'u',
++    ptInt = 'i',
++    ptFloat = 'f',
++    ptData = 's',
++    ptNode = 'c',
++    ptFrame = 'v',
++    ptFunction = 'm'
++} VSPropTypes;
++
++typedef enum VSGetPropErrors {
++    peUnset = 1,
++    peType  = 2,
++    peIndex = 4
++} VSGetPropErrors;
++
++typedef enum VSPropAppendMode {
++    paReplace = 0,
++    paAppend  = 1,
++    paTouch   = 2
++} VSPropAppendMode;
++
++typedef struct VSCoreInfo {
++    const char *versionString;
++    int core;
++    int api;
++    int numThreads;
++    int64_t maxFramebufferSize;
++    int64_t usedFramebufferSize;
++} VSCoreInfo;
++
++typedef struct VSVideoInfo {
++    const VSFormat *format;
++    int64_t fpsNum;
++    int64_t fpsDen;
++    int width;
++    int height;
++    int numFrames; /* api 3.2 - no longer allowed to be 0 */
++    int flags;
++} VSVideoInfo;
++
++typedef enum VSActivationReason {
++    arInitial = 0,
++    arFrameReady = 1,
++    arAllFramesReady = 2,
++    arError = -1
++} VSActivationReason;
++
++typedef enum VSMessageType {
++    mtDebug = 0,
++    mtWarning = 1,
++    mtCritical = 2,
++    mtFatal = 3
++} VSMessageType;
++
++/* core entry point */
++typedef const VSAPI *(VS_CC *VSGetVapourSynthAPI)(int version);
++
++/* plugin function and filter typedefs */
++typedef void (VS_CC *VSPublicFunction)(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi);
++typedef void (VS_CC *VSRegisterFunction)(const char *name, const char *args, VSPublicFunction argsFunc, void *functionData, VSPlugin *plugin);
++typedef void (VS_CC *VSConfigPlugin)(const char *identifier, const char *defaultNamespace, const char *name, int apiVersion, int readonly, VSPlugin *plugin);
++typedef void (VS_CC *VSInitPlugin)(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin);
++typedef void (VS_CC *VSFreeFuncData)(void *userData);
++typedef void (VS_CC *VSFilterInit)(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi);
++typedef const VSFrameRef *(VS_CC *VSFilterGetFrame)(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi);
++typedef void (VS_CC *VSFilterFree)(void *instanceData, VSCore *core, const VSAPI *vsapi);
++
++/* other */
++typedef void (VS_CC *VSFrameDoneCallback)(void *userData, const VSFrameRef *f, int n, VSNodeRef *, const char *errorMsg);
++typedef void (VS_CC *VSMessageHandler)(int msgType, const char *msg, void *userData);
++
++struct VSAPI {
++    VSCore *(VS_CC *createCore)(int threads) VS_NOEXCEPT;
++    void (VS_CC *freeCore)(VSCore *core) VS_NOEXCEPT;
++    const VSCoreInfo *(VS_CC *getCoreInfo)(VSCore *core) VS_NOEXCEPT;
++
++    const VSFrameRef *(VS_CC *cloneFrameRef)(const VSFrameRef *f) VS_NOEXCEPT;
++    VSNodeRef *(VS_CC *cloneNodeRef)(VSNodeRef *node) VS_NOEXCEPT;
++    VSFuncRef *(VS_CC *cloneFuncRef)(VSFuncRef *f) VS_NOEXCEPT;
++
++    void (VS_CC *freeFrame)(const VSFrameRef *f) VS_NOEXCEPT;
++    void (VS_CC *freeNode)(VSNodeRef *node) VS_NOEXCEPT;
++    void (VS_CC *freeFunc)(VSFuncRef *f) VS_NOEXCEPT;
++
++    VSFrameRef *(VS_CC *newVideoFrame)(const VSFormat *format, int width, int height, const VSFrameRef *propSrc, VSCore *core) VS_NOEXCEPT;
++    VSFrameRef *(VS_CC *copyFrame)(const VSFrameRef *f, VSCore *core) VS_NOEXCEPT;
++    void (VS_CC *copyFrameProps)(const VSFrameRef *src, VSFrameRef *dst, VSCore *core) VS_NOEXCEPT;
++
++    void (VS_CC *registerFunction)(const char *name, const char *args, VSPublicFunction argsFunc, void *functionData, VSPlugin *plugin) VS_NOEXCEPT;
++    VSPlugin *(VS_CC *getPluginById)(const char *identifier, VSCore *core) VS_NOEXCEPT;
++    VSPlugin *(VS_CC *getPluginByNs)(const char *ns, VSCore *core) VS_NOEXCEPT;
++    VSMap *(VS_CC *getPlugins)(VSCore *core) VS_NOEXCEPT;
++    VSMap *(VS_CC *getFunctions)(VSPlugin *plugin) VS_NOEXCEPT;
++    void (VS_CC *createFilter)(const VSMap *in, VSMap *out, const char *name, VSFilterInit init, VSFilterGetFrame getFrame, VSFilterFree free, int filterMode, int flags, void *instanceData, VSCore *core) VS_NOEXCEPT;
++    void (VS_CC *setError)(VSMap *map, const char *errorMessage) VS_NOEXCEPT; /* use to signal errors outside filter getframe functions */
++    const char *(VS_CC *getError)(const VSMap *map) VS_NOEXCEPT; /* use to query errors, returns 0 if no error */
++    void (VS_CC *setFilterError)(const char *errorMessage, VSFrameContext *frameCtx) VS_NOEXCEPT; /* use to signal errors in the filter getframe function */
++    VSMap *(VS_CC *invoke)(VSPlugin *plugin, const char *name, const VSMap *args) VS_NOEXCEPT;
++
++    const VSFormat *(VS_CC *getFormatPreset)(int id, VSCore *core) VS_NOEXCEPT;
++    const VSFormat *(VS_CC *registerFormat)(int colorFamily, int sampleType, int bitsPerSample, int subSamplingW, int subSamplingH, VSCore *core) VS_NOEXCEPT;
++
++    const VSFrameRef *(VS_CC *getFrame)(int n, VSNodeRef *node, char *errorMsg, int bufSize) VS_NOEXCEPT; /* do never use inside a filter's getframe function, for external applications using the core as a library or for requesting frames in a filter constructor */
++    void (VS_CC *getFrameAsync)(int n, VSNodeRef *node, VSFrameDoneCallback callback, void *userData) VS_NOEXCEPT; /* do never use inside a filter's getframe function, for external applications using the core as a library or for requesting frames in a filter constructor */
++    const VSFrameRef *(VS_CC *getFrameFilter)(int n, VSNodeRef *node, VSFrameContext *frameCtx) VS_NOEXCEPT; /* only use inside a filter's getframe function */
++    void (VS_CC *requestFrameFilter)(int n, VSNodeRef *node, VSFrameContext *frameCtx) VS_NOEXCEPT; /* only use inside a filter's getframe function */
++    void (VS_CC *queryCompletedFrame)(VSNodeRef **node, int *n, VSFrameContext *frameCtx) VS_NOEXCEPT; /* only use inside a filter's getframe function */
++    void (VS_CC *releaseFrameEarly)(VSNodeRef *node, int n, VSFrameContext *frameCtx) VS_NOEXCEPT; /* only use inside a filter's getframe function */
++
++    int (VS_CC *getStride)(const VSFrameRef *f, int plane) VS_NOEXCEPT;
++    const uint8_t *(VS_CC *getReadPtr)(const VSFrameRef *f, int plane) VS_NOEXCEPT;
++    uint8_t *(VS_CC *getWritePtr)(VSFrameRef *f, int plane) VS_NOEXCEPT;
++
++    VSFuncRef *(VS_CC *createFunc)(VSPublicFunction func, void *userData, VSFreeFuncData free, VSCore *core, const VSAPI *vsapi) VS_NOEXCEPT;
++    void (VS_CC *callFunc)(VSFuncRef *func, const VSMap *in, VSMap *out, VSCore *core, const VSAPI *vsapi) VS_NOEXCEPT; /* core and vsapi arguments are completely ignored, they only remain to preserve ABI */
++
++    /* property access functions */
++    VSMap *(VS_CC *createMap)(void) VS_NOEXCEPT;
++    void (VS_CC *freeMap)(VSMap *map) VS_NOEXCEPT;
++    void (VS_CC *clearMap)(VSMap *map) VS_NOEXCEPT;
++
++    const VSVideoInfo *(VS_CC *getVideoInfo)(VSNodeRef *node) VS_NOEXCEPT;
++    void (VS_CC *setVideoInfo)(const VSVideoInfo *vi, int numOutputs, VSNode *node) VS_NOEXCEPT;
++    const VSFormat *(VS_CC *getFrameFormat)(const VSFrameRef *f) VS_NOEXCEPT;
++    int (VS_CC *getFrameWidth)(const VSFrameRef *f, int plane) VS_NOEXCEPT;
++    int (VS_CC *getFrameHeight)(const VSFrameRef *f, int plane) VS_NOEXCEPT;
++    const VSMap *(VS_CC *getFramePropsRO)(const VSFrameRef *f) VS_NOEXCEPT;
++    VSMap *(VS_CC *getFramePropsRW)(VSFrameRef *f) VS_NOEXCEPT;
++
++    int (VS_CC *propNumKeys)(const VSMap *map) VS_NOEXCEPT;
++    const char *(VS_CC *propGetKey)(const VSMap *map, int index) VS_NOEXCEPT;
++    int (VS_CC *propNumElements)(const VSMap *map, const char *key) VS_NOEXCEPT;
++    char (VS_CC *propGetType)(const VSMap *map, const char *key) VS_NOEXCEPT;
++
++    int64_t(VS_CC *propGetInt)(const VSMap *map, const char *key, int index, int *error) VS_NOEXCEPT;
++    double(VS_CC *propGetFloat)(const VSMap *map, const char *key, int index, int *error) VS_NOEXCEPT;
++    const char *(VS_CC *propGetData)(const VSMap *map, const char *key, int index, int *error) VS_NOEXCEPT;
++    int (VS_CC *propGetDataSize)(const VSMap *map, const char *key, int index, int *error) VS_NOEXCEPT;
++    VSNodeRef *(VS_CC *propGetNode)(const VSMap *map, const char *key, int index, int *error) VS_NOEXCEPT;
++    const VSFrameRef *(VS_CC *propGetFrame)(const VSMap *map, const char *key, int index, int *error) VS_NOEXCEPT;
++    VSFuncRef *(VS_CC *propGetFunc)(const VSMap *map, const char *key, int index, int *error) VS_NOEXCEPT;
++
++    int (VS_CC *propDeleteKey)(VSMap *map, const char *key) VS_NOEXCEPT;
++    int (VS_CC *propSetInt)(VSMap *map, const char *key, int64_t i, int append) VS_NOEXCEPT;
++    int (VS_CC *propSetFloat)(VSMap *map, const char *key, double d, int append) VS_NOEXCEPT;
++    int (VS_CC *propSetData)(VSMap *map, const char *key, const char *data, int size, int append) VS_NOEXCEPT;
++    int (VS_CC *propSetNode)(VSMap *map, const char *key, VSNodeRef *node, int append) VS_NOEXCEPT;
++    int (VS_CC *propSetFrame)(VSMap *map, const char *key, const VSFrameRef *f, int append) VS_NOEXCEPT;
++    int (VS_CC *propSetFunc)(VSMap *map, const char *key, VSFuncRef *func, int append) VS_NOEXCEPT;
++
++    int64_t (VS_CC *setMaxCacheSize)(int64_t bytes, VSCore *core) VS_NOEXCEPT;
++    int (VS_CC *getOutputIndex)(VSFrameContext *frameCtx) VS_NOEXCEPT;
++    VSFrameRef *(VS_CC *newVideoFrame2)(const VSFormat *format, int width, int height, const VSFrameRef **planeSrc, const int *planes, const VSFrameRef *propSrc, VSCore *core) VS_NOEXCEPT;
++    void (VS_CC *setMessageHandler)(VSMessageHandler handler, void *userData) VS_NOEXCEPT;
++    int (VS_CC *setThreadCount)(int threads, VSCore *core) VS_NOEXCEPT;
++
++    const char *(VS_CC *getPluginPath)(const VSPlugin *plugin) VS_NOEXCEPT;
++
++    /* api 3.1 */
++    const int64_t *(VS_CC *propGetIntArray)(const VSMap *map, const char *key, int *error) VS_NOEXCEPT;
++    const double *(VS_CC *propGetFloatArray)(const VSMap *map, const char *key, int *error) VS_NOEXCEPT;
++
++    int (VS_CC *propSetIntArray)(VSMap *map, const char *key, const int64_t *i, int size) VS_NOEXCEPT;
++    int (VS_CC *propSetFloatArray)(VSMap *map, const char *key, const double *d, int size) VS_NOEXCEPT;
++
++    /* api 3.4 */
++    void (VS_CC *logMessage)(int msgType, const char *msg) VS_NOEXCEPT;
++};
++
++VS_API(const VSAPI *) getVapourSynthAPI(int version) VS_NOEXCEPT;
++
++#endif /* VAPOURSYNTH_H */
+diff -uNrp ./x264.005/extras/VSHelper.h ./x264.006/extras/VSHelper.h
+--- ./x264.005/extras/VSHelper.h	1970-01-01 03:00:00.000000000 +0300
++++ ./x264.006/extras/VSHelper.h	2018-05-02 20:47:20.702579200 +0300
+@@ -0,0 +1,174 @@
++/*****************************************************************************
++* Copyright (c) 2012-2015 Fredrik Mellbin
++* --- Legal stuff ---
++* This program is free software. It comes without any warranty, to
++* the extent permitted by applicable law. You can redistribute it
++* and/or modify it under the terms of the Do What The Fuck You Want
++* To Public License, Version 2, as published by Sam Hocevar. See
++* http://sam.zoy.org/wtfpl/COPYING for more details.
++*****************************************************************************/
++
++#ifndef VSHELPER_H
++#define VSHELPER_H
++
++#include <limits.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <assert.h>
++#include <math.h>
++#ifdef _WIN32
++#include <malloc.h>
++#endif
++#include "VapourSynth.h"
++
++/* Visual Studio doesn't recognize inline in c mode */
++#if defined(_MSC_VER) && !defined(__cplusplus)
++#define inline _inline
++#endif
++
++/* A kinda portable definition of the C99 restrict keyword (or its inofficial C++ equivalent) */
++#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L /* Available in C99 */
++#define VS_RESTRICT restrict
++#elif defined(__cplusplus) || defined(_MSC_VER) /* Almost all relevant C++ compilers support it so just assume it works */
++#define VS_RESTRICT __restrict
++#else /* Not supported */
++#define VS_RESTRICT
++#endif
++
++#ifdef _WIN32
++#define VS_ALIGNED_MALLOC(pptr, size, alignment) do { *(pptr) = _aligned_malloc((size), (alignment)); } while (0)
++#define VS_ALIGNED_FREE(ptr) do { _aligned_free((ptr)); } while (0)
++#else
++#define VS_ALIGNED_MALLOC(pptr, size, alignment) do { if(posix_memalign((void**)(pptr), (alignment), (size))) *((void**)pptr) = NULL; } while (0)
++#define VS_ALIGNED_FREE(ptr) do { free((ptr)); } while (0)
++#endif
++
++#define VSMAX(a,b) ((a) > (b) ? (a) : (b))
++#define VSMIN(a,b) ((a) > (b) ? (b) : (a))
++
++#ifdef __cplusplus 
++/* A nicer templated malloc for all the C++ users out there */
++#if __cplusplus >= 201103L || (defined(_MSC_VER) && _MSC_VER >= 1900)
++template<typename T=void>
++#else
++template<typename T>
++#endif
++static inline T* vs_aligned_malloc(size_t size, size_t alignment) {
++#ifdef _WIN32
++    return (T*)_aligned_malloc(size, alignment);
++#else
++    void *tmp = NULL;
++    if (posix_memalign(&tmp, alignment, size))
++        tmp = 0;
++    return (T*)tmp;
++#endif
++}
++
++static inline void vs_aligned_free(void *ptr) {
++    VS_ALIGNED_FREE(ptr);
++}
++#endif /* __cplusplus */
++
++/* convenience function for checking if the format never changes between frames */
++static inline int isConstantFormat(const VSVideoInfo *vi) {
++    return vi->height > 0 && vi->width > 0 && vi->format;
++}
++
++/* convenience function to check for if two clips have the same format (unknown/changeable will be considered the same too) */
++static inline int isSameFormat(const VSVideoInfo *v1, const VSVideoInfo *v2) {
++    return v1->height == v2->height && v1->width == v2->width && v1->format == v2->format;
++}
++
++/* multiplies and divides a rational number, such as a frame duration, in place and reduces the result */
++static inline void muldivRational(int64_t *num, int64_t *den, int64_t mul, int64_t div) {
++    /* do nothing if the rational number is invalid */
++    if (!*den)
++        return;
++
++    /* nobody wants to accidentally divide by zero */
++    assert(div);
++
++    int64_t a, b;
++    *num *= mul;
++    *den *= div;
++    a = *num;
++    b = *den;
++    while (b != 0) {
++        int64_t t = a;
++        a = b;
++        b = t % b;
++    }
++    if (a < 0)
++        a = -a;
++    *num /= a;
++    *den /= a;
++}
++
++/* reduces a rational number */
++static inline void vs_normalizeRational(int64_t *num, int64_t *den) {
++    muldivRational(num, den, 1, 1);
++}
++
++/* add two rational numbers and reduces the result */
++static inline void vs_addRational(int64_t *num, int64_t *den, int64_t addnum, int64_t addden) {
++    /* do nothing if the rational number is invalid */
++    if (!*den)
++        return;
++
++    /* nobody wants to accidentally add an invalid rational number */
++    assert(addden);
++
++    if (*den == addden) {
++        *num += addnum;
++    } else {
++        int64_t temp = addden;
++        addnum *= *den;
++        addden *= *den;
++        *num *= temp;
++        *den *= temp;
++
++        *num += addnum;
++
++        vs_normalizeRational(num, den);
++    }
++}
++
++/* converts an int64 to int with saturation, useful to silence warnings when reading int properties among other things */
++static inline int int64ToIntS(int64_t i) {
++    if (i > INT_MAX)
++        return INT_MAX;
++    else if (i < INT_MIN)
++        return INT_MIN;
++    else return (int)i;
++}
++
++static inline void vs_bitblt(void *dstp, int dst_stride, const void *srcp, int src_stride, size_t row_size, size_t height) {
++    if (height) {
++        if (src_stride == dst_stride && src_stride == (int)row_size) {
++            memcpy(dstp, srcp, row_size * height);
++        } else {
++            const uint8_t *srcp8 = (const uint8_t *)srcp;
++            uint8_t *dstp8 = (uint8_t *)dstp;
++            size_t i;
++            for (i = 0; i < height; i++) {
++                memcpy(dstp8, srcp8, row_size);
++                srcp8 += src_stride;
++                dstp8 += dst_stride;
++            }
++        }
++    }
++}
++
++/* check if the frame dimensions are valid for a given format */
++/* returns non-zero for valid width and height */
++static inline int areValidDimensions(const VSFormat *fi, int width, int height) {
++    return !(width % (1 << fi->subSamplingW) || height % (1 << fi->subSamplingH));
++}
++
++/* Visual Studio doesn't recognize inline in c mode */
++#if defined(_MSC_VER) && !defined(__cplusplus)
++#undef inline
++#endif
++
++#endif
+diff -uNrp ./x264.005/extras/VSScript.h ./x264.006/extras/VSScript.h
+--- ./x264.005/extras/VSScript.h	1970-01-01 03:00:00.000000000 +0300
++++ ./x264.006/extras/VSScript.h	2018-05-02 20:47:20.703578600 +0300
+@@ -0,0 +1,84 @@
++/*
++* Copyright (c) 2013-2018 Fredrik Mellbin
++*
++* This file is part of VapourSynth.
++*
++* VapourSynth is free software; you can redistribute it and/or
++* modify it under the terms of the GNU Lesser General Public
++* License as published by the Free Software Foundation; either
++* version 2.1 of the License, or (at your option) any later version.
++*
++* VapourSynth is distributed in the hope that it will be useful,
++* but WITHOUT ANY WARRANTY; without even the implied warranty of
++* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++* Lesser General Public License for more details.
++*
++* You should have received a copy of the GNU Lesser General Public
++* License along with VapourSynth; if not, write to the Free Software
++* Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++*/
++
++#ifndef VSSCRIPT_H
++#define VSSCRIPT_H
++
++#include "VapourSynth.h"
++
++#define VSSCRIPT_API_MAJOR 3
++#define VSSCRIPT_API_MINOR 2
++#define VSSCRIPT_API_VERSION ((VSSCRIPT_API_MAJOR << 16) | (VSSCRIPT_API_MINOR))
++
++/* As of api 3.2 all functions are threadsafe */
++
++typedef struct VSScript VSScript;
++
++typedef enum VSEvalFlags {
++    efSetWorkingDir = 1,
++} VSEvalFlags;
++
++/* Get the api version */
++VS_API(int) vsscript_getApiVersion(void); /* api 3.1 */
++
++/* Initialize the available scripting runtimes, returns zero on failure */
++VS_API(int) vsscript_init(void);
++
++/* Free all scripting runtimes */
++VS_API(int) vsscript_finalize(void);
++
++/*
++* Pass a pointer to a null handle to create a new one
++* The values returned by the query functions are only valid during the lifetime of the VSScript
++* scriptFilename is if the error message should reference a certain file, NULL allowed in vsscript_evaluateScript()
++* core is to pass in an already created instance so that mixed environments can be used,
++* NULL creates a new core that can be fetched with vsscript_getCore() later OR implicitly uses the one associated with an already existing handle when passed
++* If efSetWorkingDir is passed to flags the current working directory will be changed to the path of the script
++* note that if scriptFilename is NULL in vsscript_evaluateScript() then __file__ won't be set and the working directory won't be changed
++* Set efSetWorkingDir to get the default and recommended behavior
++*/
++VS_API(int) vsscript_evaluateScript(VSScript **handle, const char *script, const char *scriptFilename, int flags);
++/* Convenience version of the above function that loads the script from a file */
++VS_API(int) vsscript_evaluateFile(VSScript **handle, const char *scriptFilename, int flags);
++/* Create an empty environment for use in later invocations, mostly useful to set script variables before execution */
++VS_API(int) vsscript_createScript(VSScript **handle);
++
++VS_API(void) vsscript_freeScript(VSScript *handle);
++VS_API(const char *) vsscript_getError(VSScript *handle);
++/* The node returned must be freed using freeNode() before calling vsscript_freeScript() */
++VS_API(VSNodeRef *) vsscript_getOutput(VSScript *handle, int index);
++/* Both nodes returned must be freed using freeNode() before calling vsscript_freeScript(), the alpha node pointer will only be set if an alpha clip has been set in the script */
++VS_API(VSNodeRef *) vsscript_getOutput2(VSScript *handle, int index, VSNodeRef **alpha); /* api 3.1 */
++/* Unset an output index */
++VS_API(int) vsscript_clearOutput(VSScript *handle, int index);
++/* The core is valid as long as the environment exists */
++VS_API(VSCore *) vsscript_getCore(VSScript *handle);
++/* Convenience function for retrieving a vsapi pointer */
++VS_API(const VSAPI *) vsscript_getVSApi(void); /* deprecated as of api 3.2 since it's impossible to tell the api version supported */
++VS_API(const VSAPI *) vsscript_getVSApi2(int version); /* api 3.2, generally you should pass VAPOURSYNTH_API_VERSION */
++
++/* Variables names that are not set or not of a convertible type will return an error */
++VS_API(int) vsscript_getVariable(VSScript *handle, const char *name, VSMap *dst);
++VS_API(int) vsscript_setVariable(VSScript *handle, const VSMap *vars);
++VS_API(int) vsscript_clearVariable(VSScript *handle, const char *name);
++/* Tries to clear everything set in an environment, normally it is better to simply free an environment completely and create a new one */
++VS_API(void) vsscript_clearEnvironment(VSScript *handle);
++
++#endif /* VSSCRIPT_H */
+diff -uNrp ./x264.005/input/input.h ./x264.006/input/input.h
+--- ./x264.005/input/input.h	2018-05-03 14:47:09.931086200 +0300
++++ ./x264.006/input/input.h	2018-05-05 00:41:47.191228600 +0300
+@@ -101,6 +101,7 @@ typedef struct
+ 
+ extern const cli_input_t raw_input;
+ extern const cli_input_t y4m_input;
++extern const cli_input_t vpy_input;
+ extern const cli_input_t avs_input;
+ extern const cli_input_t thread_8_input;
+ extern const cli_input_t thread_10_input;
+diff -uNrp ./x264.005/input/vpy.c ./x264.006/input/vpy.c
+--- ./x264.005/input/vpy.c	1970-01-01 03:00:00.000000000 +0300
++++ ./x264.006/input/vpy.c	2018-05-05 00:31:03.763876800 +0300
+@@ -0,0 +1,312 @@
++/*****************************************************************************
++ * vpy.c: VapourSynth input
++ *****************************************************************************
++ * Copyright (C) 2009-2018 x264 project
++ *
++ * Author: Vladimir Kontserenko <djatom@beatrice-raws.org>
++ * Some portions of code and ideas taken for avs.c, y4m.c files, "ffmpeg demuxer" 
++ * proposed at doom9 thread and from rigaya's NVEnc codebase.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111, USA.
++ *
++ * This program is also available under a commercial proprietary license.
++ * For more information, contact us at licensing@x264.com.
++ *****************************************************************************/
++
++#include "input.h"
++#include <stdatomic.h>
++#include "extras/VSScript.h"
++#include "extras/VSHelper.h"
++
++#ifdef _M_IX86
++#define VPY_X64 0
++#else
++#define VPY_X64 1
++#endif
++
++#ifdef __unix__
++#include <dlfcn.h>
++#include <unistd.h>
++#include <ctype.h>
++#define vs_sleep sleep
++#define vs_strtok strtok_r
++#define vs_sscanf sscanf
++#ifdef __MACH__
++#define vs_open() dlopen( "libvapoursynth-script.dylib", RTLD_NOW )
++#else
++#define vs_open() dlopen( "libvapoursynth-script.so", RTLD_NOW )
++#endif
++#define vs_close dlclose
++#define vs_address dlsym
++#else
++#define vs_sleep Sleep
++#define vs_strtok strtok_s
++#define vs_sscanf sscanf_s
++#define vs_open() LoadLibraryW( L"vsscript" )
++#define vs_close FreeLibrary
++#define vs_address GetProcAddress
++#endif
++
++#define DECLARE_VS_FUNC(name) func_##name name
++
++#define LOAD_VS_FUNC(name, namex86)\
++{\
++    h->func.name = (void*)vs_address( h->library, (VPY_X64) ? #name : namex86 );\
++    if( !h->func.name )\
++        goto fail;\
++}
++
++#define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "vpy", __VA_ARGS__ )
++
++typedef int (VS_CC *func_vsscript_init)(void);
++typedef int (VS_CC *func_vsscript_finalize)(void);
++typedef int (VS_CC *func_vsscript_evaluateFile)(VSScript **handle, const char *scriptFilename, int flags);
++typedef void (VS_CC *func_vsscript_freeScript)(VSScript *handle);
++typedef const char * (VS_CC *func_vsscript_getError)(VSScript *handle);
++typedef VSNodeRef * (VS_CC *func_vsscript_getOutput)(VSScript *handle, int index);
++typedef VSCore * (VS_CC *func_vsscript_getCore)(VSScript *handle);
++typedef const VSAPI * (VS_CC *func_vsscript_getVSApi2)(int version);
++
++typedef struct VapourSynthContext {
++    void *library;
++    const VSAPI *vsapi;
++    VSScript *script;
++    VSNodeRef *node;
++    int curr_frame;
++    int ncpu;
++    atomic_int async_pending;
++    int num_frames;
++    int bit_depth;
++    uint64_t plane_size[3];
++    int uc_depth;
++    struct 
++    {
++        DECLARE_VS_FUNC( vsscript_init );
++        DECLARE_VS_FUNC( vsscript_finalize );
++        DECLARE_VS_FUNC( vsscript_evaluateFile );
++        DECLARE_VS_FUNC( vsscript_freeScript );
++        DECLARE_VS_FUNC( vsscript_getError );
++        DECLARE_VS_FUNC( vsscript_getOutput );
++        DECLARE_VS_FUNC( vsscript_getCore );
++        DECLARE_VS_FUNC( vsscript_getVSApi2 );
++    } func;
++} VapourSynthContext;
++
++static int custom_vs_load_library( VapourSynthContext *h )
++{
++    h->library = vs_open();
++    if( !h->library )
++        return -1;
++    LOAD_VS_FUNC( vsscript_init, "_vsscript_init@0" );
++    LOAD_VS_FUNC( vsscript_finalize, "_vsscript_finalize@0" );
++    LOAD_VS_FUNC( vsscript_evaluateFile, "_vsscript_evaluateFile@12" );
++    LOAD_VS_FUNC( vsscript_freeScript, "_vsscript_freeScript@4" );
++    LOAD_VS_FUNC( vsscript_getError, "_vsscript_getError@4" );
++    LOAD_VS_FUNC( vsscript_getOutput, "_vsscript_getOutput@8" );
++    LOAD_VS_FUNC( vsscript_getCore, "_vsscript_getCore@4" );
++    LOAD_VS_FUNC( vsscript_getVSApi2, "_vsscript_getVSApi2@4" );
++    return 0;
++fail:
++    vs_close( h->library );
++    h->library = NULL;
++    return -1;
++}
++
++static void VS_CC async_callback( void *user_data, const VSFrameRef *f, int n, VSNodeRef *node, const char *error_msg )
++{
++    VapourSynthContext *h = user_data;
++
++    if (!f) {
++        x264_cli_log( "vpy", X264_LOG_WARNING, "async frame request failed: %s\n", error_msg );
++    }
++
++    h->vsapi->freeFrame( f );
++    atomic_fetch_sub( &h->async_pending, 1 );
++}
++
++/* slightly modified rigaya's VersionString parser */
++int get_core_revision(const char *vsVersionString) 
++{
++    char *api_info = NULL;
++    char buf[1024];
++    strcpy( buf, vsVersionString );
++    for ( char *p = buf, *q = NULL, *r = NULL; NULL != ( q = vs_strtok( p, "\n", &r ) ); ) {
++        if ( NULL != ( api_info = strstr( q, "Core" ) ) ) {
++            strcpy( buf, api_info );
++            for ( char *s = buf; *s; s++ )
++                *s = (char)tolower( *s );
++            int rev = 0;
++            return ( 1 == vs_sscanf( buf, "core r%d", &rev ) ) ? rev : 0;
++        }
++        p = NULL;
++    }
++    return 0;
++}
++
++static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, cli_input_opt_t *opt )
++{
++    FILE *fh = x264_fopen( psz_filename, "r" );
++    if( !fh )
++        return -1;
++    int b_regular = x264_is_regular_file( fh );
++    fclose( fh );
++    FAIL_IF_ERROR( !b_regular, "VPY input is incompatible with non-regular file `%s'\n", psz_filename );
++
++    VapourSynthContext *h = calloc( 1, sizeof(VapourSynthContext) );
++    if( !h )
++        return -1;
++    FAIL_IF_ERROR( custom_vs_load_library( h ), "failed to load VapourSynth\n" );
++    if( !h->func.vsscript_init() )
++        FAIL_IF_ERROR( 1, "failed to initialize VapourSynth environment\n" );
++    h->vsapi = h->func.vsscript_getVSApi2( VAPOURSYNTH_API_VERSION );
++    FAIL_IF_ERROR( !h->vsapi, "failed to get vapoursynth API\n" );
++    if( h->func.vsscript_evaluateFile( &h->script, (const char *)psz_filename, efSetWorkingDir ) )
++        FAIL_IF_ERROR( 1, "Can't evaluate script: %s\n",  h->func.vsscript_getError( h->script ) );
++    h->node = h->func.vsscript_getOutput( h->script, 0 );
++    FAIL_IF_ERROR( !h->node, "`%s' has no video data\n", psz_filename );
++
++    const VSCoreInfo *core_info = h->vsapi->getCoreInfo( h->func.vsscript_getCore( h->script ) );
++    const VSVideoInfo *vi = h->vsapi->getVideoInfo( h->node );
++    FAIL_IF_ERROR( !isConstantFormat(vi), "only constant video formats are supported\n" );
++    x264_cli_log( "vpy", X264_LOG_INFO, "using VapourSynth Video Processing Library Core R%d\n", get_core_revision( core_info->versionString ) );
++    info->width = vi->width;
++    info->height = vi->height;
++    info->fps_num = vi->fpsNum;
++    info->fps_den = vi->fpsDen;
++    h->num_frames = info->num_frames = vi->numFrames;
++    h->bit_depth = vi->format->bitsPerSample;
++    info->thread_safe = 1;
++    h->ncpu = core_info->numThreads;
++    h->uc_depth = (h->bit_depth & 7) && (vi->format->colorFamily == cmYUV || vi->format->colorFamily == cmYCoCg);
++
++    if( vi->format->id == pfRGB48 )
++        info->csp = X264_CSP_BGR | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
++    else if( vi->format->id == pfRGB24 )
++        info->csp = X264_CSP_BGR | X264_CSP_VFLIP;
++    else if( vi->format->id == pfYUV444P9 || vi->format->id == pfYUV444P10 || vi->format->id == pfYUV444P12 || vi->format->id == pfYUV444P14 || vi->format->id == pfYUV444P16)
++        info->csp = X264_CSP_I444 | X264_CSP_HIGH_DEPTH;
++    else if( vi->format->id == pfYUV422P9 || vi->format->id == pfYUV422P10 || vi->format->id == pfYUV422P12 || vi->format->id == pfYUV422P14 || vi->format->id == pfYUV422P16)
++        info->csp = X264_CSP_I422 | X264_CSP_HIGH_DEPTH;
++    else if( vi->format->id == pfYUV420P9 || vi->format->id == pfYUV420P10 || vi->format->id == pfYUV420P12 || vi->format->id == pfYUV420P14 || vi->format->id == pfYUV420P16)
++        info->csp = X264_CSP_I420 | X264_CSP_HIGH_DEPTH;
++    else if( vi->format->id == pfYUV444P8 )
++        info->csp = X264_CSP_I444;
++    else if( vi->format->id == pfYUV422P8 )
++        info->csp = X264_CSP_I422;
++    else if( vi->format->id == pfYUV420P8 )
++        info->csp = X264_CSP_I420;
++    else
++        FAIL_IF_ERROR( 1, "not supported pixel type: %s\n", vi->format->name );
++
++    /* since VapourSynth supports vfr internally, it would be great to implement handling for it someday */
++    info->vfr = 0;
++
++    /* bitdepth upconversion stuff */
++    if( h->uc_depth ) {
++        const x264_cli_csp_t *cli_csp = x264_cli_get_csp( info->csp );
++        for( int i = 0; i < cli_csp->planes; i++ ) {
++            h->plane_size[i] = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
++            h->plane_size[i] /= x264_cli_csp_depth_factor( info->csp );
++        }
++    }
++
++    *p_handle = h;
++
++    return 0;
++}
++
++static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
++{
++    if( x264_cli_pic_alloc( pic, X264_CSP_NONE, width, height ) )
++        return -1;
++    pic->img.csp = csp;
++    const x264_cli_csp_t *cli_csp = x264_cli_get_csp( csp );
++    if( cli_csp )
++        pic->img.planes = cli_csp->planes;
++    return 0;
++}
++
++static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
++{
++    static const int planes[3] = { 0, 1, 2 };
++    char errbuf[256];
++    const VSFrameRef *frm = NULL;
++    VapourSynthContext *h = handle;
++
++    if( i_frame >= h->num_frames )
++        return -1;
++
++    /* explicitly cast away the const attribute to avoid a warning */
++    frm = pic->opaque = (VSFrameRef*)h->vsapi->getFrame( i_frame, h->node, errbuf, sizeof(errbuf) );
++    FAIL_IF_ERROR( !frm, "%s occurred while reading frame %d\n", errbuf, i_frame );
++
++    /* Prefetch the subsequent frames. */
++    for ( int i = 0; i < h->ncpu; ++i ) {
++        if ( i >= h->num_frames - i_frame )
++            break;
++        h->vsapi->getFrameAsync( i_frame + i, h->node, async_callback, h );
++        atomic_fetch_add( &h->async_pending, 1 );
++    }
++
++    for( int i = 0; i < pic->img.planes; i++ ) {
++        /* explicitly cast away the const attribute to avoid a warning */
++        pic->img.plane[i] = (uint8_t*)h->vsapi->getReadPtr( frm, planes[i] );
++        pic->img.stride[i] = h->vsapi->getStride( frm, planes[i] );
++        if( h->uc_depth ) {
++            /* upconvert non 16bit high depth planes to 16bit using the same
++             * algorithm as used in the depth filter. */
++            uint16_t *plane = (uint16_t*)pic->img.plane[i];
++            uint64_t pixel_count = h->plane_size[i];
++            int lshift = 16 - h->bit_depth;
++            for( uint64_t j = 0; j < pixel_count; j++ )
++                plane[j] = plane[j] << lshift;
++        }
++    }
++    return 0;
++}
++
++static int release_frame( cli_pic_t *pic, hnd_t handle )
++{
++    VapourSynthContext *h = handle;
++    h->vsapi->freeFrame( pic->opaque );
++    return 0;
++}
++
++static void picture_clean( cli_pic_t *pic, hnd_t handle )
++{
++    memset( pic, 0, sizeof(cli_pic_t) );
++}
++
++static int close_file( hnd_t handle )
++{
++    VapourSynthContext *h = handle;
++
++    /* Wait for any async requests to complete. */
++    while ( atomic_load( &h->async_pending ) ) {
++        vs_sleep( 1 );
++    }
++
++    h->vsapi->freeNode( h->node );
++    h->func.vsscript_freeScript( h->script );
++    h->func.vsscript_finalize();
++
++    if( h->library )
++        vs_close( h->library );
++
++    free( h );
++    return 0;
++}
++
++const cli_input_t vpy_input = { open_file, picture_alloc, read_frame, release_frame, picture_clean, close_file };
+diff -uNrp ./x264.005/Makefile ./x264.006/Makefile
+--- ./x264.005/Makefile	2018-05-03 14:47:09.813672500 +0300
++++ ./x264.006/Makefile	2018-05-05 00:30:38.958178100 +0300
+@@ -59,6 +59,10 @@ SRCCLI +=
+ endif
+ 
+ # Optional module sources
++ifneq ($(findstring HAVE_VPY 1, $(CONFIG)),)
++SRCCLI += input/vpy.c
++endif
++
+ ifneq ($(findstring HAVE_AVS 1, $(CONFIG)),)
+ SRCCLI += input/avs.c
+ endif
+diff -uNrp ./x264.005/x264.c ./x264.006/x264.c
+--- ./x264.005/x264.c	2018-05-05 00:04:33.918824700 +0300
++++ ./x264.006/x264.c	2018-05-05 00:29:38.026587100 +0300
+@@ -171,6 +171,9 @@ static const char * const demuxer_names[
+     "auto",
+     "raw",
+     "y4m",
++#if HAVE_VPY
++    "vpy",
++#endif
+ #if HAVE_AVS
+     "avs",
+ #endif
+@@ -540,6 +543,7 @@ static void help( x264_param_t *defaults
+         "\n"
+         "Infile can be raw (in which case resolution is required),\n"
+         "  or YUV4MPEG (*.y4m),\n"
++        "  or VapourSynth if compiled with support (%s).\n"
+         "  or Avisynth if compiled with support (%s).\n"
+         "  or libav* formats if compiled with lavf support (%s) or ffms support (%s).\n"
+         "Outfile type is selected by filename:\n"
+@@ -556,6 +560,11 @@ static void help( x264_param_t *defaults
+         "      --fullhelp              List all options\n"
+         "\n",
+         X264_BUILD, X264_VERSION,
++#if HAVE_VPY
++        "yes",
++#else
++        "no",
++#endif
+ #if HAVE_AVS
+         "yes",
+ #else
+@@ -1300,7 +1309,15 @@ static int select_input( const char *dem
+         return -1;
+ #endif
+     }
+-    else if( !strcasecmp( module, "y4m" ) )
++    else if( !strcasecmp( module, "vpy" ) ) {
++#if HAVE_VPY
++        cli_input = vpy_input;
++        module = "vpy";
++#else
++        x264_cli_log( "x264", X264_LOG_ERROR, "not compiled with VPY input support\n" );
++        return -1;
++#endif
++    } else if( !strcasecmp( module, "y4m" ) )
+         cli_input = y4m_input;
+     else if( !strcasecmp( module, "raw" ) || !strcasecmp( ext, "yuv" ) )
+         cli_input = raw_input;
+@@ -1324,6 +1341,15 @@ static int select_input( const char *dem
+             cli_input = lavf_input;
+         }
+ #endif
++#if HAVE_VPY
++        if( b_regular && (b_auto || !strcasecmp( demuxer, "vpy" )) &&
++            !vpy_input.open_file( filename, p_handle, info, opt ) )
++        {
++            module = "vpy";
++            b_auto = 0;
++            cli_input = vpy_input;
++        }
++#endif
+ #if HAVE_AVS
+         if( b_regular && (b_auto || !strcasecmp( demuxer, "avs" )) &&
+             !avs_input.open_file( filename, p_handle, info, opt ) )
