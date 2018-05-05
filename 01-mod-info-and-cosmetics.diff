@@ -1,0 +1,54 @@
+diff -uNrp ./x264/common/base.c ./x264.001/common/base.c
+--- ./x264/common/base.c	2018-05-03 14:47:09.830659100 +0300
++++ ./x264.001/common/base.c	2018-05-04 23:51:02.562976100 +0300
+@@ -1397,7 +1397,7 @@ char *x264_param2string( x264_param_t *p
+     if( p->rc.i_rc_method == X264_RC_ABR || p->rc.i_rc_method == X264_RC_CRF )
+     {
+         if( p->rc.i_rc_method == X264_RC_CRF )
+-            s += sprintf( s, " crf=%.1f", p->rc.f_rf_constant );
++            s += sprintf( s, " crf=%.4f", p->rc.f_rf_constant );
+         else
+             s += sprintf( s, " bitrate=%d ratetol=%.1f",
+                           p->rc.i_bitrate, p->rc.f_rate_tolerance );
+diff -uNrp ./x264/encoder/encoder.c ./x264.001/encoder/encoder.c
+--- ./x264/encoder/encoder.c	2018-05-03 14:47:09.914098900 +0300
++++ ./x264.001/encoder/encoder.c	2018-05-04 22:49:47.734211900 +0300
+@@ -1749,6 +1749,13 @@ x264_t *x264_encoder_open( x264_param_t
+             profile, level, subsampling[CHROMA_FORMAT], BIT_DEPTH );
+     }
+ 
++    char *opts = x264_param2string( &h->param, 0 );
++    if( opts )
++    {
++        x264_log( h, X264_LOG_INFO, "%s\n", opts );
++        x264_free( opts );
++    }
++
+     return h;
+ fail:
+     x264_free( h );
+diff -uNrp ./x264/encoder/set.c ./x264.001/encoder/set.c
+--- ./x264/encoder/set.c	2018-05-03 14:47:09.919095200 +0300
++++ ./x264.001/encoder/set.c	2018-05-04 22:49:32.083389000 +0300
+@@ -577,7 +577,7 @@ int x264_sei_version_write( x264_t *h, b
+     CHECKED_MALLOC( payload, 200 + strlen( opts ) );
+ 
+     memcpy( payload, uuid, 16 );
+-    sprintf( payload+16, "x264 - core %d%s - H.264/MPEG-4 AVC codec - "
++    sprintf( payload+16, "x264 - core %d%s (DJATOM's mod) - H.264/MPEG-4 AVC codec - "
+              "Copy%s 2003-2018 - http://www.videolan.org/x264.html - options: %s",
+              X264_BUILD, X264_VERSION, HAVE_GPL?"left":"right", opts );
+     length = strlen(payload)+1;
+Binary files ./x264/x264.7z and ./x264.001/x264.7z differ
+diff -uNrp ./x264/x264.c ./x264.001/x264.c
+--- ./x264/x264.c	2018-05-03 14:47:09.948072800 +0300
++++ ./x264.001/x264.c	2018-05-04 23:50:05.210314100 +0300
+@@ -473,7 +473,7 @@ static void help( x264_param_t *defaults
+ #define H0 printf
+ #define H1 if( longhelp >= 1 ) printf
+ #define H2 if( longhelp == 2 ) printf
+-    H0( "x264 core:%d%s\n"
++    H0( "x264 core:%d%s (DJATOM's mod)\n"
+         "Syntax: x264 [options] -o outfile infile\n"
+         "\n"
+         "Infile can be raw (in which case resolution is required),\n"
