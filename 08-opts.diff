@@ -1,0 +1,180 @@
+diff -uNrp ./x264.007/common/base.c ./x264.008/common/base.c
+--- ./x264.007/common/base.c	2018-05-04 23:55:58.269460800 +0300
++++ ./x264.008/common/base.c	2018-05-05 02:34:29.479033600 +0300
+@@ -415,6 +415,10 @@ void x264_param_default( x264_param_t *p
+     param->i_opencl_device = 0;
+     param->opencl_device_id = NULL;
+     param->psz_clbin_file = NULL;
++
++    param->i_opts_write = X264_OPTS_FULL;
++    for( int i = 0; i < X264_OPTS_MAX; i++ )
++        param->psz_opts[i] = NULL;
+ }
+ 
+ static int param_apply_preset( x264_param_t *param, const char *preset )
+@@ -1272,6 +1276,36 @@ int x264_param_parse( x264_param_t *p, c
+         p->b_aud = atobool(value);
+     OPT("sps-id")
+         p->i_sps_id = atoi(value);
++    OPT("opts")
++    {
++#define OPTS_SET( psz_x, prefix, flag )                     \
++        if( !strncasecmp( value, prefix, strlen(prefix) ) ) \
++        {                                                   \
++            if( p->i_opts_write & flag )                    \
++            {                                               \
++                free(psz_x);                                \
++                psz_x = NULL;                               \
++            }                                               \
++            psz_x = strdup( value + strlen(prefix) );       \
++            p->i_opts_write |= flag;                        \
++        }
++        OPTS_SET(      p->psz_opts[0], "preinfo:" , X264_OPTS_PREINFO  )
++        else OPTS_SET( p->psz_opts[0], "0:"       , X264_OPTS_PREINFO  )
++        else OPTS_SET( p->psz_opts[1], "postinfo:", X264_OPTS_POSTINFO )
++        else OPTS_SET( p->psz_opts[1], "1:"       , X264_OPTS_POSTINFO )
++        else OPTS_SET( p->psz_opts[2], "preopt:"  , X264_OPTS_PREOPT   )
++        else OPTS_SET( p->psz_opts[2], "2:"       , X264_OPTS_PREOPT   )
++        else OPTS_SET( p->psz_opts[3], "postopt:" , X264_OPTS_POSTOPT  )
++        else OPTS_SET( p->psz_opts[3], "3:"       , X264_OPTS_POSTOPT  )
++        else
++        {
++            int flag = strlen(value) == 1 && isdigit(value[0]) ? atoi(value) : atobool(value);
++            b_error |= flag < X264_OPTS_NONE || flag > X264_OPTS_FULL;
++            p->i_opts_write &= ~X264_OPTS_FULL;    // clear basic flag bit
++            p->i_opts_write |= flag;               // write basic flag bit
++        }
++#undef OPTS_SET
++    }
+     OPT("global-header")
+         p->b_repeat_headers = !atobool(value);
+     OPT("repeat-headers")
+diff -uNrp ./x264.007/encoder/set.c ./x264.008/encoder/set.c
+--- ./x264.007/encoder/set.c	2018-05-04 22:49:32.083389000 +0300
++++ ./x264.008/encoder/set.c	2018-05-05 02:34:45.559521600 +0300
+@@ -570,26 +570,65 @@ int x264_sei_version_write( x264_t *h, b
+     };
+     char *opts = x264_param2string( &h->param, 0 );
+     char *payload;
+-    int length;
++    int offset = 16;
++    int length = 200;
++
++#define X264_FREE_OPTS                          \
++{                                               \
++    for( int i = 0; i < X264_OPTS_MAX; i++ )    \
++    {                                           \
++        if( h->param.psz_opts[i] )              \
++        {                                       \
++            free( h->param.psz_opts[i] );       \
++            h->param.psz_opts[i] = NULL;        \
++        }                                       \
++    }                                           \
++}
+ 
+     if( !opts )
+         return -1;
+     CHECKED_MALLOC( payload, 200 + strlen( opts ) );
+ 
+     memcpy( payload, uuid, 16 );
+-    sprintf( payload+16, "x264 - core %d%s (DJATOM's mod) - H.264/MPEG-4 AVC codec - "
+-             "Copy%s 2003-2018 - http://www.videolan.org/x264.html - options: %s",
+-             X264_BUILD, X264_VERSION, HAVE_GPL?"left":"right", opts );
++    if( !h->param.i_opts_write )
++        *(payload + offset) = '\0';
++    else
++    {
++        if( h->param.i_opts_write & X264_OPTS_PREINFO )
++            offset += sprintf( payload + offset,
++                               ( h->param.i_opts_write & X264_OPTS_INFO ) ? "%s " : "%s",
++                               h->param.psz_opts[0] );
++        if( h->param.i_opts_write & X264_OPTS_INFO )
++            offset += sprintf( payload + offset, "x264 - core %d%s (DJATOM's mod) - H.264/MPEG-4 AVC codec - "
++                     "Copy%s 2003-2018 - http://www.videolan.org/x264.html",
++                     X264_BUILD, X264_VERSION, HAVE_GPL?"left":"right" );
++        if( h->param.i_opts_write & X264_OPTS_POSTINFO )
++            offset += sprintf( payload + offset, " %s", h->param.psz_opts[1] );
++        if( h->param.i_opts_write & ( X264_OPTS_PREOPT | X264_OPTS_SETTING | X264_OPTS_POSTOPT ) )
++        {
++            offset += sprintf( payload + offset, " - options:" );
++            if( h->param.i_opts_write & X264_OPTS_PREOPT )
++                offset += sprintf( payload + offset, " %s", h->param.psz_opts[2] );
++            if( h->param.i_opts_write & X264_OPTS_SETTING )
++                offset += sprintf( payload + offset, " %s", opts );
++            if( h->param.i_opts_write & X264_OPTS_POSTOPT )
++                offset += sprintf( payload + offset, " %s", h->param.psz_opts[3] );
++        }
++    }
+     length = strlen(payload)+1;
+ 
+     x264_sei_write( s, (uint8_t *)payload, length, SEI_USER_DATA_UNREGISTERED );
+ 
++    X264_FREE_OPTS
+     x264_free( opts );
+     x264_free( payload );
+     return 0;
+ fail:
++    X264_FREE_OPTS
+     x264_free( opts );
+     return -1;
++
++#undef X264_FREE_OPTS
+ }
+ 
+ void x264_sei_buffering_period_write( x264_t *h, bs_t *s )
+diff -uNrp ./x264.007/x264.c ./x264.008/x264.c
+--- ./x264.007/x264.c	2018-05-05 00:29:38.026587100 +0300
++++ ./x264.008/x264.c	2018-05-05 02:34:03.612161500 +0300
+@@ -1015,6 +1015,11 @@ static void help( x264_param_t *defaults
+     H2( "      --timebase <int/int>    Specify timebase numerator and denominator\n"
+         "                 <integer>    Specify timebase numerator for input timecode file\n"
+         "                              or specify timebase denominator for other input\n" );
++    H2( "      --opts <integer>        Set level of writing options in SEI [%d]\n"
++        "                                  - 0: no information will be written in SEI\n"
++        "                                  - 1: write x264 information\n"
++        "                                  - 2: write x264 options\n"
++        "                                  - 3: write x264 information and options\n", defaults->i_opts_write );
+     H2( "      --dts-compress          Eliminate initial delay with container DTS hack\n" );
+     H0( "\n" );
+     H0( "Filtering:\n" );
+@@ -1194,6 +1199,8 @@ static struct option long_options[] =
+     { "dump-yuv",    required_argument, NULL, 0 },
+     { "sps-id",      required_argument, NULL, 0 },
+     { "aud",               no_argument, NULL, 0 },
++    { "opts",        required_argument, NULL, 0 },
++    { "no-opts",           no_argument, NULL, 0 },
+     { "nr",          required_argument, NULL, 0 },
+     { "cqm",         required_argument, NULL, 0 },
+     { "cqmfile",     required_argument, NULL, 0 },
+diff -uNrp ./x264.007/x264.h ./x264.008/x264.h
+--- ./x264.007/x264.h	2018-05-04 23:56:55.260173300 +0300
++++ ./x264.008/x264.h	2018-05-05 02:34:12.762042500 +0300
+@@ -266,6 +266,19 @@ static const char * const x264_log_level
+ #define X264_NAL_HRD_VBR             1
+ #define X264_NAL_HRD_CBR             2
+ 
++/* SEI level */
++#define X264_OPTS_NONE          0x0000
++#define X264_OPTS_INFO          0x0001
++#define X264_OPTS_SETTING       0x0002
++#define X264_OPTS_FULL          0x0003
++
++#define X264_OPTS_PREINFO       0x0010
++#define X264_OPTS_POSTINFO      0x0020
++#define X264_OPTS_PREOPT        0x0040
++#define X264_OPTS_POSTOPT       0x0080
++
++#define X264_OPTS_MAX                4
++
+ /* Zones: override ratecontrol or other options for specific sections of the video.
+  * See x264_encoder_reconfig() for which options can be changed.
+  * If zones overlap, whichever comes later in the list takes precedence. */
+@@ -479,6 +492,8 @@ typedef struct x264_param_t
+     uint32_t i_fps_den;
+     uint32_t i_timebase_num;    /* Timebase numerator */
+     uint32_t i_timebase_den;    /* Timebase denominator */
++    int i_opts_write;
++    char *psz_opts[X264_OPTS_MAX];
+ 
+     int b_tff;
+ 
