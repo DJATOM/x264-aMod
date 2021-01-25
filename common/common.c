@@ -26,6 +26,8 @@
 
 #include "common.h"
 
+static void x264_log_file( char *, int, const char *, va_list );
+
 /****************************************************************************
  * x264_log:
  ****************************************************************************/
@@ -40,5 +42,43 @@ void x264_log( x264_t *h, int i_level, const char *psz_fmt, ... )
         else
             h->param.pf_log( h->param.p_log_private, i_level, psz_fmt, arg );
         va_end( arg );
+    }
+
+    if( h && h->param.psz_log_file && i_level <= h->param.i_log_file_level )
+    {
+        va_list arg;
+        va_start( arg, psz_fmt );
+        x264_log_file( h->param.psz_log_file, i_level, psz_fmt, arg );
+        va_end( arg );
+    }
+}
+
+static void x264_log_file( char *p_file_name, int i_level, const char *psz_fmt, va_list arg )
+{
+    char *psz_prefix;
+    switch( i_level )
+    {
+        case X264_LOG_ERROR:
+            psz_prefix = "error";
+            break;
+        case X264_LOG_WARNING:
+            psz_prefix = "warning";
+            break;
+        case X264_LOG_INFO:
+            psz_prefix = "info";
+            break;
+        case X264_LOG_DEBUG:
+            psz_prefix = "debug";
+            break;
+        default:
+            psz_prefix = "unknown";
+            break;
+    }
+    FILE *p_log_file = x264_fopen( p_file_name, "ab" );
+    if( p_log_file )
+    {
+        fprintf( p_log_file, "x264 [%s]: ", psz_prefix );
+        vfprintf( p_log_file, psz_fmt, arg );
+        fclose( p_log_file );
     }
 }
