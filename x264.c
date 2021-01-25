@@ -1948,10 +1948,10 @@ static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, i
     if( print_progress_header )
     {
         if( i_frame_total )
-            fprintf( stderr, " %6s  %13s %5s %8s %9s %9s\n",
-                     "", "frames   ", "fps ", "kb/s ", "elapsed", "remain " );
+            fprintf( stderr, " %6s  %13s %5s %8s %9s %9s %7s    %7s\n",
+                     "", "frames   ", "fps ", "kb/s ", "elapsed", "remain ", "size", "est.size" );
         else
-            fprintf( stderr, "%6s  %5s  %8s  %9s\n", "frames", "fps ", "kb/s ", "elapsed" );
+            fprintf( stderr, "%6s  %5s  %8s  %9s  %7s\n", "frames", "fps ", "kb/s ", "elapsed", "size" );
         print_progress_header = 0;
     }
 
@@ -1966,13 +1966,17 @@ static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, i
     if( i_frame_total )
     {
         int eta = i_elapsed * (i_frame_total - i_frame) / ((int64_t)i_frame * 1000000);
-        sprintf( buf, "x264 [%5.1f%%] %6d/%-6d %5.2f %8.2f %3d:%02d:%02d %3d:%02d:%02d",
+        double estsz = (double) i_file * i_frame_total / (i_frame * 1024.);
+        sprintf( buf, "x264 [%5.1f%%] %6d/%-6d %5.2f %8.2f %3d:%02d:%02d %3d:%02d:%02d %7.2f %1sB %7.2f %1sB",
                  100. * i_frame / i_frame_total, i_frame, i_frame_total, fps, bitrate,
-                 secs/3600, (secs/60)%60, secs%60, eta/3600, (eta/60)%60, eta%60 );
+                 secs/3600, (secs/60)%60, secs%60, eta/3600, (eta/60)%60, eta%60,
+                 i_file < 1048576 ? (double) i_file / 1024. : (double) i_file / 1048576., i_file < 1048576 ? "K":"M",
+                 estsz < 1024 ? estsz : estsz / 1024, estsz < 1024 ? "K" : "M" );
     }
     else
-        sprintf( buf, "x264 %6d  %5.2f  %8.2f  %3d:%02d:%02d",
-                 i_frame, fps, bitrate, secs/3600, (secs/60)%60, secs%60 );
+        sprintf( buf, "x264 %6d  %5.2f  %8.2f  %3d:%02d:%02d  %7.2f %sB",
+                 i_frame, fps, bitrate, secs/3600, (secs/60)%60, secs%60,
+                 i_file < 1048576 ? (double) i_file / 1024. : (double) i_file / 1048576., i_file < 1048576 ? "K":"M" );
     fprintf( stderr, "%s  \r", buf+5 );
     x264_cli_set_console_title( buf );
     fflush( stderr ); // needed in windows
