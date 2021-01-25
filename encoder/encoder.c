@@ -1208,10 +1208,15 @@ static int validate_parameters( x264_t *h, int b_open )
             x264_log( h, X264_LOG_WARNING, "--tune %s should be used if attempting to benchmark %s!\n", s, s );
     }
 
+    if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_NONE )
+        h->param.rc.f_fade_compensate += 0.1;
+    if( !h->param.rc.b_mb_tree )
+        h->param.rc.f_fade_compensate = 0;
     if( !h->param.analyse.b_psy )
     {
         h->param.analyse.f_psy_rd = 0;
         h->param.analyse.f_psy_trellis = 0;
+        h->param.rc.f_fade_compensate = 0;
     }
     h->param.analyse.f_psy_rd = x264_clip3f( h->param.analyse.f_psy_rd, 0, 10 );
     h->param.analyse.f_psy_trellis = x264_clip3f( h->param.analyse.f_psy_trellis, 0, 10 );
