@@ -482,7 +482,7 @@ static void help( x264_param_t *defaults, int longhelp )
 #define H0 printf
 #define H1 if( longhelp >= 1 ) printf
 #define H2 if( longhelp == 2 ) printf
-    H0( "x264 core:%d%s\n"
+    H0( "x264 core:%d%s (DJATOM's mod)\n"
         "Syntax: x264 [options] -o outfile infile\n"
         "\n"
         "Infile can be raw (in which case resolution is required),\n"
@@ -1616,6 +1616,8 @@ generic_option:
     if( select_output( muxer, output_filename, param ) )
         return -1;
     FAIL_IF_ERROR( cli_output.open_file( output_filename, &opt->hout, &output_opt ), "could not open output file `%s'\n", output_filename );
+
+    x264_cli_log( "x264", X264_LOG_INFO, "core:%d%s (DJATOM's mod)\n", X264_BUILD, X264_VERSION );
 
     input_filename = argv[optind++];
     video_info_t info = {0};
