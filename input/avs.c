@@ -148,9 +148,9 @@ static int custom_avs_load_library( avs_hnd_t *h, cli_input_opt_t *opt )
     if( opt->frameserver_lib_path )
     {
 #ifdef _WIN32
-        int size_needed = MultiByteToWideChar(CP_UTF8, 0, opt->frameserver_lib_path, -1, NULL, 0);
-        tmp_buf = malloc(size_needed * sizeof(libp_t));
-        MultiByteToWideChar(CP_UTF8, 0, opt->frameserver_lib_path, -1, (LPWSTR)tmp_buf, size_needed);
+        int size_needed = MultiByteToWideChar( CP_UTF8, 0, opt->frameserver_lib_path, -1, NULL, 0 );
+        tmp_buf = malloc( size_needed * sizeof(libp_t) );
+        MultiByteToWideChar( CP_UTF8, 0, opt->frameserver_lib_path, -1, (LPWSTR)tmp_buf, size_needed );
         library_path = tmp_buf;
 #else
         library_path = opt->frameserver_lib_path;
@@ -162,7 +162,7 @@ static int custom_avs_load_library( avs_hnd_t *h, cli_input_opt_t *opt )
 #ifdef _WIN32
     if( opt->frameserver_lib_path )
     {
-        free(tmp_buf);
+        free( tmp_buf );
     }
 #endif
     if( !h->library )
