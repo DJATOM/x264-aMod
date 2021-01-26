@@ -613,7 +613,7 @@ static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int 
 
 static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 {
-    static const int plane[3] = { AVS_PLANAR_Y, AVS_PLANAR_U, AVS_PLANAR_V };
+    static const int planes[3] = { AVS_PLANAR_Y, AVS_PLANAR_U, AVS_PLANAR_V };
     avs_hnd_t *h = handle;
     if( i_frame >= h->num_frames )
         return -1;
@@ -623,8 +623,8 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     for( int i = 0; i < pic->img.planes; i++ )
     {
         /* explicitly cast away the const attribute to avoid a warning */
-        pic->img.plane[i] = (uint8_t*)avs_get_read_ptr_p( frm, plane[i] );
-        pic->img.stride[i] = avs_get_pitch_p( frm, plane[i] );
+        pic->img.plane[i] = (uint8_t*)avs_get_read_ptr_p( frm, planes[i] );
+        pic->img.stride[i] = avs_get_pitch_p( frm, planes[i] );
 #if !USE_AVXSYNTH
         if( h->uc_depth )
         {
