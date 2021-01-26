@@ -51,6 +51,7 @@ Cross-compilation:
 
 External library support:
   --disable-avs            disable avisynth support
+  --disable-vpy            disable vapoursynth support
   --disable-swscale        disable swscale support
   --disable-lavf           disable libavformat support
   --disable-ffms           disable ffmpegsource support
@@ -369,6 +370,7 @@ static="no"
 bashcompletion="auto"
 bashcompletionsdir=""
 avs="auto"
+vpy="auto"
 lavf="auto"
 ffms="auto"
 gpac="auto"
@@ -409,7 +411,7 @@ NL="
 
 # list of all preprocessor HAVE values we can define
 CONFIG_HAVE="MALLOC_H ALTIVEC ALTIVEC_H MMX ARMV6 ARMV6T2 NEON AARCH64 BEOSTHREAD POSIXTHREAD WIN32THREAD THREAD LOG2F SWSCALE \
-             LAVF FFMS GPAC AVS GPL VECTOREXT INTERLACED CPU_COUNT OPENCL THP LSMASH X86_INLINE_ASM AS_FUNC INTEL_DISPATCHER \
+             LAVF FFMS GPAC AVS VPY GPL VECTOREXT INTERLACED CPU_COUNT OPENCL THP LSMASH X86_INLINE_ASM AS_FUNC INTEL_DISPATCHER \
              MSA MMAP WINRT VSX ARM_INLINE_ASM STRTOK_R CLOCK_GETTIME BITDEPTH8 BITDEPTH10"
 
 # parse options
@@ -461,6 +463,9 @@ for opt do
             ;;
         --disable-avs)
             avs="no"
+            ;;
+        --disable-vpy)
+            vpy="no"
             ;;
         --disable-lavf)
             lavf="no"
@@ -1130,6 +1135,7 @@ fi
 
 if [ "$cli" = "no" ] ; then
     avs="no"
+    vpy="no"
     lavf="no"
     ffms="no"
     gpac="no"
@@ -1286,6 +1292,19 @@ if [ "$avs" = "auto" ] ; then
         AVS_LIBS="-ldl"
         LDFLAGSCLI="$AVS_LIBS $LDFLAGSCLI"
     fi
+fi
+
+if [ "$vpy" = "auto" ] ; then
+    vpy="yes"
+    define HAVE_VPY
+    if [ "$SYS" = "LINUX" -o "$SYS" = "MACOSX" ] ; then
+        VPY_LIBS="-lvapoursynth-script"
+        if [ "$avs" = "no" ] ; then
+            VPY_LIBS="-ldl $VPY_LIBS"
+        fi
+        LDFLAGSCLI="$VPY_LIBS $LDFLAGSCLI"
+    fi
+    echo $vpy;
 fi
 
 cc_check "stdint.h" "" "uint32_t test_vec __attribute__ ((vector_size (16))) = {0,1,2,3};" && define HAVE_VECTOREXT
@@ -1628,6 +1647,7 @@ bashcompletion: $bashcompletion
 asm:            $asm
 interlaced:     $interlaced
 avs:            $avs
+vpy:            $vpy
 lavf:           $lavf
 ffms:           $ffms
 mp4:            $mp4

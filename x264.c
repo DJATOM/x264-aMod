@@ -189,6 +189,9 @@ const char * const x264_demuxer_names[] =
 #if HAVE_AVS
     "avs",
 #endif
+#if HAVE_VPY
+    "vpy",
+#endif
 #if HAVE_LAVF
     "lavf",
 #endif
@@ -550,6 +553,7 @@ static void help( x264_param_t *defaults, int longhelp )
         "Infile can be raw (in which case resolution is required),\n"
         "  or YUV4MPEG (*.y4m),\n"
         "  or Avisynth if compiled with support (%s).\n"
+        "  or VapourSynth if compiled with support (%s).\n"
         "  or libav* formats if compiled with lavf support (%s) or ffms support (%s).\n"
         "Outfile type is selected by filename:\n"
         " .264 -> Raw bytestream\n"
@@ -566,6 +570,11 @@ static void help( x264_param_t *defaults, int longhelp )
         "\n",
         X264_BUILD, X264_VERSION,
 #if HAVE_AVS
+        "yes",
+#else
+        "no",
+#endif
+#if HAVE_VPY
         "yes",
 #else
         "no",
@@ -957,7 +966,7 @@ static void help( x264_param_t *defaults, int longhelp )
         "                                  - %s\n", x264_muxer_names[0], stringify_names( buf, x264_muxer_names ) );
     H1( "      --demuxer <string>      Specify input container format [\"%s\"]\n"
         "                                  - %s\n", x264_demuxer_names[0], stringify_names( buf, x264_demuxer_names ) );
-    H1( "      --synth-lib <string>    Load external avisynth library from given full path\n" );
+    H1( "      --synth-lib <string>    Load external avisynth/vapoursynth library from given full path\n" );
     H1( "      --input-fmt <string>    Specify input file format (requires lavf support)\n" );
     H1( "      --input-csp <string>    Specify input colorspace format for raw input\n" );
     print_csp_names( longhelp );
@@ -1327,6 +1336,15 @@ static int select_input( const char *demuxer, char *used_demuxer, char *filename
         return -1;
 #endif
     }
+    else if( !strcasecmp( module, "vpy" ) ) {
+#if HAVE_VPY
+        cli_input = vpy_input;
+        module = "vpy";
+#else
+        x264_cli_log( "x264", X264_LOG_ERROR, "not compiled with VPY input support\n" );
+        return -1;
+#endif
+    }
     else if( !strcasecmp( module, "y4m" ) )
         cli_input = y4m_input;
     else if( !strcasecmp( module, "raw" ) || !strcasecmp( ext, "yuv" ) )
@@ -1358,6 +1376,15 @@ static int select_input( const char *demuxer, char *used_demuxer, char *filename
             module = "avs";
             b_auto = 0;
             cli_input = avs_input;
+        }
+#endif
+#if HAVE_VPY
+        if( b_regular && (b_auto || !strcasecmp( demuxer, "vpy" )) &&
+            !vpy_input.open_file( filename, p_handle, info, opt ) )
+        {
+            module = "vpy";
+            b_auto = 0;
+            cli_input = vpy_input;
         }
 #endif
         if( b_auto && !raw_input.open_file( filename, p_handle, info, opt ) )
