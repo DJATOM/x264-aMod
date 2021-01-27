@@ -257,6 +257,8 @@ static const cli_pulldown_t pulldown_values[] =
 #undef TBT
 #undef BTB
 
+static int print_progress_header = 1;
+
 // indexed by pic_struct enum
 static const float pulldown_frame_duration[10] = { 0.0, 1, 0.5, 0.5, 1, 1, 1.5, 1.5, 2, 3 };
 
@@ -999,6 +1001,7 @@ static void help( x264_param_t *defaults, int longhelp )
     H1( "\n" );
     H1( "  -v, --verbose               Print stats for each frame\n" );
     H1( "      --no-progress           Don't show the progress indicator while encoding\n" );
+    H1( "      --no-progress-header    Don't show the progress indicator's header while encoding\n" );
     H0( "      --quiet                 Quiet Mode\n" );
     H1( "      --log-level <string>    Specify the maximum level of logging [\"%s\"]\n"
         "                                  - %s\n", strtable_lookup( x264_log_level_names, cli_log_level - X264_LOG_NONE ),
@@ -1058,6 +1061,7 @@ typedef enum
     OPT_THREAD_INPUT,
     OPT_QUIET,
     OPT_NOPROGRESS,
+    OPT_NOPROGRESSHEAD,
     OPT_LONGHELP,
     OPT_PROFILE,
     OPT_PRESET,
@@ -1215,6 +1219,7 @@ static struct option long_options[] =
     { "log-file",          required_argument, NULL, OPT_LOG_FILE },
     { "log-file-level",    required_argument, NULL, OPT_LOG_FILE_LEVEL },
     { "no-progress",       no_argument, NULL, OPT_NOPROGRESS },
+    { "no-progress-header", no_argument, NULL, OPT_NOPROGRESSHEAD },
     { "dump-yuv",    required_argument, NULL, 0 },
     { "sps-id",      required_argument, NULL, 0 },
     { "aud",               no_argument, NULL, 0 },
@@ -1620,6 +1625,9 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
             case OPT_NOPROGRESS:
                 opt->b_progress = 0;
                 break;
+            case OPT_NOPROGRESSHEAD:
+                print_progress_header = 0;
+                break;
             case OPT_TUNE:
             case OPT_PRESET:
                 break;
@@ -1975,7 +1983,6 @@ static int encode_frame( x264_t *h, hnd_t hout, x264_picture_t *pic, int64_t *la
 
 static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, int i_frame_total, int64_t i_file, x264_param_t *param, int64_t last_ts )
 {
-    static int print_progress_header = 1;
     char buf[200];
     int64_t i_time = x264_mdate();
     if( i_previous && i_time - i_previous < UPDATE_INTERVAL )
