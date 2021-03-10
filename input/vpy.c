@@ -225,12 +225,38 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     h->node = h->func.vsscript_getOutput( h->script, 0 );
     FAIL_IF_ERROR( !h->node, "`%s' has no video data\n", psz_filename );
 
-    const VSCoreInfo *core_info = h->vsapi->getCoreInfo( h->func.vsscript_getCore( h->script ) );
+    VSCore *core = h->func.vsscript_getCore( h->script );
+    const VSCoreInfo *core_info = h->vsapi->getCoreInfo( core );
     const VSVideoInfo *vi = h->vsapi->getVideoInfo( h->node );
     FAIL_IF_ERROR( !isConstantFormat(vi), "only constant video formats are supported\n" );
     x264_cli_log( "vpy", X264_LOG_INFO, "VapourSynth Video Processing Library Core R%d\n", get_core_revision( core_info->versionString ) );
     info->width = vi->width;
     info->height = vi->height;
+
+    h->bit_depth = vi->format->bitsPerSample;
+    if (h->bit_depth & 7)
+    {
+        VSMap *args = h->vsapi->createMap();
+        VSMap *ret;
+        const char *error;
+        VSPlugin *resizePlugin = h->vsapi->getPluginById("com.vapoursynth.resize", core);
+
+        h->vsapi->propSetNode(args, "clip", h->node, paReplace);
+        h->vsapi->freeNode(h->node);
+        VSFormat *new_format = h->vsapi->registerFormat(vi->format->colorFamily, vi->format->sampleType, 16, vi->format->subSamplingW, vi->format->subSamplingH, core);
+        h->vsapi->propSetInt(args, "format", new_format->id, paReplace);
+        ret = h->vsapi->invoke(resizePlugin, "Point", args);
+        error = h->vsapi->getError(ret);
+        if (error) {
+            FAIL_IF_ERROR( 1, "failed to convert node to 16 bits: `%s'\n", error );
+            h->vsapi->freeMap(args);
+            h->vsapi->freeMap(ret);
+            return -1;
+        }
+        h->node = h->vsapi->propGetNode(ret, "clip", 0, NULL);
+        h->vsapi->freeMap(ret);
+    }
+
     info->vfr = h->vfr = 0;
 
     h->async_start_frame = 0;
@@ -277,7 +303,6 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     h->vsapi->freeFrame( frame0 ); // What a waste, but whatever...
 
     h->num_frames = info->num_frames = vi->numFrames;
-    h->bit_depth = vi->format->bitsPerSample;
     info->thread_safe = 1;
 
     h->async_requests = core_info->numThreads;
@@ -298,8 +323,6 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         atomic_fetch_add( &h->async_pending, 1 );
     }
 
-    h->uc_depth = (h->bit_depth & 7) && (vi->format->colorFamily == cmYUV || vi->format->colorFamily == cmYCoCg);
-
     if( vi->format->id == pfRGB48 )
         info->csp = X264_CSP_BGR | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
     else if( vi->format->id == pfRGB24 )
@@ -318,15 +341,6 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         info->csp = X264_CSP_I420;
     else
         FAIL_IF_ERROR( 1, "not supported pixel type: %s\n", vi->format->name );
-
-    /* High bitdepth upconversion stuff. */
-    if( h->uc_depth ) {
-        const x264_cli_csp_t *cli_csp = x264_cli_get_csp( info->csp );
-        for( int i = 0; i < cli_csp->planes; i++ ) {
-            h->plane_size[i] = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
-            h->plane_size[i] /= x264_cli_csp_depth_factor( info->csp );
-        }
-    }
 
     *p_handle = h;
 
@@ -375,15 +389,6 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
         /* Explicitly cast away the const attribute to avoid warning. */
         pic->img.plane[i] = (uint8_t*)h->vsapi->getReadPtr( pic->opaque, planes[i] );
         pic->img.stride[i] = h->vsapi->getStride( pic->opaque, planes[i] );
-        if( h->uc_depth ) {
-            /* Upconvert non 16-bit high depth planes to 16-bit
-             * using the same algorithm as in the depth filter. */
-            uint16_t *plane = (uint16_t*)pic->img.plane[i];
-            uint64_t pixel_count = h->plane_size[i];
-            int lshift = 16 - h->bit_depth;
-            for( uint64_t j = 0; j < pixel_count; j++ )
-                plane[j] = plane[j] << lshift;
-        }
     }
     if ( h->vfr ) {
         /* Adapted from vspipe timecodes generator and lavf.c vfr part. */
