@@ -85,8 +85,6 @@ typedef struct
     int num_frames;
 #if !USE_AVXSYNTH
     int bit_depth;
-    int uc_depth;
-    uint64_t plane_size[3];
 #endif
     struct
     {
@@ -529,6 +527,20 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     }
 #endif
 
+#if !USE_AVXSYNTH
+    h->bit_depth = h->func.avs_bits_per_component(vi);
+    if( h->bit_depth & 7 )
+    {
+        AVS_Value arg_arr[2];
+        arg_arr[0] = res;
+        arg_arr[1] = avs_new_value_int( 16 );
+        const char *arg_name[] = { NULL, "bits" };
+        AVS_Value res2 = h->func.avs_invoke( h->env, "ConvertBits", avs_new_value_array( arg_arr, 2 ), arg_name );
+        FAIL_IF_ERROR( avs_is_error( res2 ), "couldn't convert to 16 bits: %s\n", avs_as_error( res2 ) );
+        res = update_clip( h, &vi, res2, res );
+    }
+#endif
+
     h->func.avs_release_value( res );
 
     info->width   = vi->width;
@@ -536,10 +548,6 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     info->fps_num = vi->fps_numerator;
     info->fps_den = vi->fps_denominator;
     h->num_frames = info->num_frames = vi->num_frames;
-#if !USE_AVXSYNTH
-    h->bit_depth  = h->func.avs_bits_per_component(vi);
-    h->uc_depth   = h->bit_depth & 7;
-#endif
     info->thread_safe = 1;
     if( AVS_IS_RGB64( vi ) )
         info->csp = X264_CSP_BGRA | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
@@ -579,17 +587,6 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     }
     info->vfr = 0;
 
-#if !USE_AVXSYNTH
-	if( h->uc_depth )
-	{
-		const x264_cli_csp_t *cli_csp = x264_cli_get_csp( info->csp );
-		for( int i = 0; i < cli_csp->planes; i++ )
-		{
-			h->plane_size[i] = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
-			h->plane_size[i] /= x264_cli_csp_depth_factor( info->csp );
-		}
-	}
-#endif
     *p_handle = h;
     return 0;
 }
@@ -625,18 +622,6 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
         /* explicitly cast away the const attribute to avoid a warning */
         pic->img.plane[i] = (uint8_t*)avs_get_read_ptr_p( frm, planes[i] );
         pic->img.stride[i] = avs_get_pitch_p( frm, planes[i] );
-#if !USE_AVXSYNTH
-        if( h->uc_depth )
-        {
-            /* upconvert non 16bit high depth planes to 16bit using the same
-             * algorithm as used in the depth filter. */
-            uint16_t *plane = (uint16_t*)pic->img.plane[i];
-            uint64_t pixel_count = h->plane_size[i];
-            int lshift = 16 - h->bit_depth;
-            for( uint64_t j = 0; j < pixel_count; j++ )
-                plane[j] = plane[j] << lshift;
-        }
-#endif
     }
     return 0;
 }
