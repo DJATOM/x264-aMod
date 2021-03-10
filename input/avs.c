@@ -529,6 +529,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
 #if !USE_AVXSYNTH
     h->bit_depth = h->func.avs_bits_per_component(vi);
+    FAIL_IF_ERROR( h->bit_depth < 8 || h->bit_depth > 16, "unsupported bit depth `%d'\n", h->bit_depth );
     if( h->bit_depth & 7 )
     {
         AVS_Value arg_arr[2];
