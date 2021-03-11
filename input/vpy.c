@@ -241,7 +241,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         VSMap *args = h->vsapi->createMap();
         VSMap *ret;
         const char *error;
-        VSPlugin *resizePlugin = h->vsapi->getPluginById("com.vapoursynth.resize", core);
+        VSPlugin *resizePlugin = h->vsapi->getPluginByNs("resize", core);
 
         h->vsapi->propSetNode(args, "clip", h->node, paReplace);
         h->vsapi->freeNode(h->node);
