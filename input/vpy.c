@@ -245,7 +245,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
         h->vsapi->propSetNode(args, "clip", h->node, paReplace);
         h->vsapi->freeNode(h->node);
-        VSFormat *new_format = h->vsapi->registerFormat(vi->format->colorFamily, vi->format->sampleType, 16, vi->format->subSamplingW, vi->format->subSamplingH, core);
+        const VSFormat *new_format = h->vsapi->registerFormat(vi->format->colorFamily, vi->format->sampleType, 16, vi->format->subSamplingW, vi->format->subSamplingH, core);
         h->vsapi->propSetInt(args, "format", new_format->id, paReplace);
         ret = h->vsapi->invoke(resizePlugin, "Point", args);
         error = h->vsapi->getError(ret);
