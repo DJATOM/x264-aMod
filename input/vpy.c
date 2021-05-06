@@ -102,7 +102,6 @@ typedef struct VapourSynthContext {
     int async_failed_frame;
     int num_frames;
     int bit_depth;
-    uint64_t plane_size[3];
     int uc_depth;
     int vfr;
     uint64_t timebase_num;
@@ -274,6 +273,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         info->fps_num = vi->fpsNum;
         info->fps_den = vi->fpsDen;
     }
+
     h->vsapi->freeFrame( frame0 ); // What a waste, but whatever...
 
     h->num_frames = info->num_frames = vi->numFrames;
@@ -319,15 +319,6 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     else
         FAIL_IF_ERROR( 1, "not supported pixel type: %s\n", vi->format->name );
 
-    /* High bitdepth upconversion stuff. */
-    if( h->uc_depth ) {
-        const x264_cli_csp_t *cli_csp = x264_cli_get_csp( info->csp );
-        for( int i = 0; i < cli_csp->planes; i++ ) {
-            h->plane_size[i] = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
-            h->plane_size[i] /= x264_cli_csp_depth_factor( info->csp );
-        }
-    }
-
     *p_handle = h;
 
     return 0;
@@ -335,7 +326,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
 static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
 {
-    if( x264_cli_pic_alloc( pic, X264_CSP_NONE, width, height ) )
+    /* Use "no-allocation" variant of picture init function,
+     * we will allocate desired amount of memory later. */
+    if( x264_cli_pic_init_noalloc( pic, X264_CSP_NONE, width, height ) )
         return -1;
     pic->img.csp = csp;
     const x264_cli_csp_t *cli_csp = x264_cli_get_csp( csp );
@@ -371,21 +364,35 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
         }
     }
 
-    for( int i = 0; i < pic->img.planes; i++ ) {
-        /* Explicitly cast away the const attribute to avoid warning. */
-        pic->img.plane[i] = (uint8_t*)h->vsapi->getReadPtr( pic->opaque, planes[i] );
+    for( int i = 0; i < pic->img.planes; i++ )
+    {
+        const VSFormat *fi = h->vsapi->getFrameFormat( pic->opaque );
         pic->img.stride[i] = h->vsapi->getStride( pic->opaque, planes[i] );
-        if( h->uc_depth ) {
+        const uint8_t *readPtr = h->vsapi->getReadPtr( pic->opaque, planes[i] );
+        int rowSize = h->vsapi->getFrameWidth( pic->opaque, planes[i]) * fi->bytesPerSample;
+        int height = h->vsapi->getFrameHeight( pic->opaque, planes[i] );
+
+        /* We have to explicitly copy frames or weird artifacts might appear.
+         * Also allocating plane's memory here. */
+        pic->img.plane[i] = (uint8_t *)x264_malloc( pic->img.stride[i] * height );
+        vs_bitblt( pic->img.plane[i], rowSize, readPtr, pic->img.stride[i], rowSize, height );
+
+        if( h->uc_depth )
+        {
             /* Upconvert non 16-bit high depth planes to 16-bit
              * using the same algorithm as in the depth filter. */
             uint16_t *plane = (uint16_t*)pic->img.plane[i];
-            uint64_t pixel_count = h->plane_size[i];
+            /* Real pixel count sometimes is not equal to "width * height" value,
+             * we rely on "stride / bytes_per_sample * height" instead. */
+            int pixel_count = pic->img.stride[i] / fi->bytesPerSample * height;
             int lshift = 16 - h->bit_depth;
             for( uint64_t j = 0; j < pixel_count; j++ )
                 plane[j] = plane[j] << lshift;
         }
     }
-    if ( h->vfr ) {
+
+    if ( h->vfr )
+    {
         /* Adapted from vspipe timecodes generator and lavf.c vfr part. */
         pic->pts = ( h->current_timecode_num * h->timebase_den / h->current_timecode_den ); // hope it will fit
         pic->duration = 0;
@@ -416,7 +423,7 @@ static int release_frame( cli_pic_t *pic, hnd_t handle )
 
 static void picture_clean( cli_pic_t *pic, hnd_t handle )
 {
-    memset( pic, 0, sizeof(cli_pic_t) );
+    x264_cli_pic_clean( pic );
 }
 
 static int close_file( hnd_t handle )
@@ -426,7 +433,7 @@ static int close_file( hnd_t handle )
     /* Wait for any async requests to complete. */
     atomic_int out;
     while ( out = atomic_load( &h->async_pending ) ) {
-        x264_cli_log( "vpy", X264_LOG_DEBUG, "waiting for %d async frame requests to complete...      \r", out);
+        x264_cli_log( "vpy", X264_LOG_DEBUG, "waiting for %d async frame requests to complete...      \r", out );
         vs_sleep();
     }
 
