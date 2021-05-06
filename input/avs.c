@@ -85,8 +85,8 @@ typedef struct
     int num_frames;
 #if !USE_AVXSYNTH
     int bit_depth;
+    int cmp_size;
     int uc_depth;
-    uint64_t plane_size[3];
 #endif
     struct
     {
@@ -120,6 +120,7 @@ typedef struct
         AVSC_DECLARE_FUNC( avs_num_components );
         AVSC_DECLARE_FUNC( avs_component_size );
         AVSC_DECLARE_FUNC( avs_bits_per_component );
+        AVSC_DECLARE_FUNC( avs_get_height_p );
 #endif
     } func;
 } avs_hnd_t;
@@ -199,6 +200,7 @@ static int custom_avs_load_library( avs_hnd_t *h, cli_input_opt_t *opt )
     LOAD_AVS_FUNC( avs_num_components, 1 );
     LOAD_AVS_FUNC( avs_component_size, 1 );
     LOAD_AVS_FUNC( avs_bits_per_component, 1 );
+    LOAD_AVS_FUNC( avs_get_height_p, 1 );
 #endif
     return 0;
 fail:
@@ -538,6 +540,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     h->num_frames = info->num_frames = vi->num_frames;
 #if !USE_AVXSYNTH
     h->bit_depth  = h->func.avs_bits_per_component(vi);
+    h->cmp_size   = h->func.avs_component_size(vi);
     h->uc_depth   = h->bit_depth & 7;
 #endif
     info->thread_safe = 1;
@@ -579,17 +582,6 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     }
     info->vfr = 0;
 
-#if !USE_AVXSYNTH
-	if( h->uc_depth )
-	{
-		const x264_cli_csp_t *cli_csp = x264_cli_get_csp( info->csp );
-		for( int i = 0; i < cli_csp->planes; i++ )
-		{
-			h->plane_size[i] = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
-			h->plane_size[i] /= x264_cli_csp_depth_factor( info->csp );
-		}
-	}
-#endif
     *p_handle = h;
     return 0;
 }
@@ -631,7 +623,8 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
             /* upconvert non 16bit high depth planes to 16bit using the same
              * algorithm as used in the depth filter. */
             uint16_t *plane = (uint16_t*)pic->img.plane[i];
-            uint64_t pixel_count = h->plane_size[i];
+            int plane_height = h->func.avs_get_height_p( frm, planes[i] );
+            uint64_t pixel_count = pic->img.stride[i] / h->cmp_size * plane_height;
             int lshift = 16 - h->bit_depth;
             for( uint64_t j = 0; j < pixel_count; j++ )
                 plane[j] = plane[j] << lshift;
