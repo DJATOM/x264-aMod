@@ -278,6 +278,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
     h->num_frames = info->num_frames = vi->numFrames;
     h->bit_depth = vi->format->bitsPerSample;
+    FAIL_IF_ERROR( h->bit_depth < 8 || h->bit_depth > 16, "unsupported bit depth `%d'\n", h->bit_depth );
+    FAIL_IF_ERROR( vi->format->sampleType == stFloat, "unsupported sample type `float'\n" );
     info->thread_safe = 1;
 
     h->async_requests = core_info->numThreads;
