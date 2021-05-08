@@ -81,6 +81,9 @@ typedef struct
     AVS_ScriptEnvironment *env;
     void *library;
     int num_frames;
+    int bit_depth;
+    int cmp_size;
+    int uc_depth;
     struct
     {
         AVSC_DECLARE_FUNC( avs_clip_get_error );
@@ -105,14 +108,15 @@ typedef struct
         // AviSynth+ extension
         AVSC_DECLARE_FUNC( avs_is_rgb48 );
         AVSC_DECLARE_FUNC( avs_is_rgb64 );
-        AVSC_DECLARE_FUNC( avs_is_yuv444p16 );
-        AVSC_DECLARE_FUNC( avs_is_yuv422p16 );
-        AVSC_DECLARE_FUNC( avs_is_yuv420p16 );
         AVSC_DECLARE_FUNC( avs_is_y16 );
+        AVSC_DECLARE_FUNC( avs_is_y32 );
         AVSC_DECLARE_FUNC( avs_is_444 );
         AVSC_DECLARE_FUNC( avs_is_422 );
         AVSC_DECLARE_FUNC( avs_is_420 );
         AVSC_DECLARE_FUNC( avs_is_y );
+        AVSC_DECLARE_FUNC( avs_component_size );
+        AVSC_DECLARE_FUNC( avs_bits_per_component );
+        AVSC_DECLARE_FUNC( avs_get_height_p );
     } func;
 } avs_hnd_t;
 
@@ -146,14 +150,13 @@ static int custom_avs_load_library( avs_hnd_t *h )
     LOAD_AVS_FUNC_ALIAS( avs_is_rgb48, "_avs_is_rgb48@4", 1 );
     LOAD_AVS_FUNC( avs_is_rgb64, 1 );
     LOAD_AVS_FUNC_ALIAS( avs_is_rgb64, "_avs_is_rgb64@4", 1 );
-    LOAD_AVS_FUNC( avs_is_yuv444p16, 1 );
-    LOAD_AVS_FUNC( avs_is_yuv422p16, 1 );
-    LOAD_AVS_FUNC( avs_is_yuv420p16, 1 );
-    LOAD_AVS_FUNC( avs_is_y16, 1 );
     LOAD_AVS_FUNC( avs_is_444, 1 );
     LOAD_AVS_FUNC( avs_is_422, 1 );
     LOAD_AVS_FUNC( avs_is_420, 1 );
     LOAD_AVS_FUNC( avs_is_y, 1 );
+    LOAD_AVS_FUNC( avs_component_size, 1 );
+    LOAD_AVS_FUNC( avs_bits_per_component, 1 );
+    LOAD_AVS_FUNC( avs_get_height_p, 1 );
     return 0;
 fail:
     avs_close( h->library );
@@ -175,11 +178,12 @@ fail:
 #define AVS_IS_444( vi ) (h->func.avs_is_444 ? h->func.avs_is_444( vi ) : AVS_IS_YV24( vi ))
 #define AVS_IS_RGB48( vi ) (h->func.avs_is_rgb48 && h->func.avs_is_rgb48( vi ))
 #define AVS_IS_RGB64( vi ) (h->func.avs_is_rgb64 && h->func.avs_is_rgb64( vi ))
-#define AVS_IS_YUV420P16( vi ) (h->func.avs_is_yuv420p16 && h->func.avs_is_yuv420p16( vi ))
-#define AVS_IS_YUV422P16( vi ) (h->func.avs_is_yuv422p16 && h->func.avs_is_yuv422p16( vi ))
-#define AVS_IS_YUV444P16( vi ) (h->func.avs_is_yuv444p16 && h->func.avs_is_yuv444p16( vi ))
-#define AVS_IS_Y( vi ) (h->func.avs_is_y ? h->func.avs_is_y( vi ) : AVS_IS_Y8( vi ))
-#define AVS_IS_Y16( vi ) (h->func.avs_is_y16 && h->func.avs_is_y16( vi ))
+/* No need in separated bitdepth detection on Avs+ side, we'll just shift lesser depths later using y4m workaround */
+#define AVS_IS_YUV420_HBD( vi ) (h->func.avs_is_420 && h->func.avs_is_420( vi ) && (h->func.avs_bits_per_component( vi ) > 8 && h->func.avs_bits_per_component( vi ) <= 16))
+#define AVS_IS_YUV422_HBD( vi ) (h->func.avs_is_422 && h->func.avs_is_422( vi ) && (h->func.avs_bits_per_component( vi ) > 8 && h->func.avs_bits_per_component( vi ) <= 16))
+#define AVS_IS_YUV444_HBD( vi ) (h->func.avs_is_444 && h->func.avs_is_444( vi ) && (h->func.avs_bits_per_component( vi ) > 8 && h->func.avs_bits_per_component( vi ) <= 16))
+#define AVS_IS_Y( vi ) (h->func.avs_is_y ? h->func.avs_is_y( vi ) : avs_is_y8( vi ))
+#define AVS_IS_Y_HBD( vi ) (h->func.avs_is_y && h->func.avs_is_y( vi ) && (h->func.avs_bits_per_component( vi ) > 8 && h->func.avs_bits_per_component( vi ) <= 16))
 
 /* generate a filter sequence to try based on the filename extension */
 static void avs_build_filter_sequence( char *filename_ext, const char *filter[AVS_MAX_SEQUENCE+1] )
@@ -458,6 +462,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     info->fps_num = vi->fps_numerator;
     info->fps_den = vi->fps_denominator;
     h->num_frames = info->num_frames = vi->num_frames;
+    h->bit_depth  = h->func.avs_bits_per_component(vi);
+    h->cmp_size   = h->func.avs_component_size(vi);
+    h->uc_depth   = h->bit_depth & 7;
     info->thread_safe = 1;
     if( AVS_IS_RGB64( vi ) )
         info->csp = X264_CSP_BGRA | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
@@ -467,19 +474,19 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         info->csp = X264_CSP_BGR | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
     else if( avs_is_rgb24( vi ) )
         info->csp = X264_CSP_BGR | X264_CSP_VFLIP;
-    else if( AVS_IS_YUV444P16( vi ) )
+    else if( AVS_IS_YUV444_HBD( vi ) )
         info->csp = X264_CSP_I444 | X264_CSP_HIGH_DEPTH;
     else if( AVS_IS_YV24( vi ) )
         info->csp = X264_CSP_I444;
-    else if( AVS_IS_YUV422P16( vi ) )
+    else if( AVS_IS_YUV422_HBD( vi ) )
         info->csp = X264_CSP_I422 | X264_CSP_HIGH_DEPTH;
     else if( AVS_IS_YV16( vi ) )
         info->csp = X264_CSP_I422;
-    else if( AVS_IS_YUV420P16( vi ) )
+    else if( AVS_IS_YUV420_HBD( vi ) )
         info->csp = X264_CSP_I420 | X264_CSP_HIGH_DEPTH;
     else if( AVS_IS_YV12( vi ) )
         info->csp = X264_CSP_I420;
-    else if( AVS_IS_Y16( vi ) )
+    else if( AVS_IS_Y_HBD( vi ) )
         info->csp = X264_CSP_I400 | X264_CSP_HIGH_DEPTH;
     else if( AVS_IS_Y8( vi ) )
         info->csp = X264_CSP_I400;
@@ -532,6 +539,18 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
         /* explicitly cast away the const attribute to avoid a warning */
         pic->img.plane[i] = (uint8_t*)AVS_GET_READ_PTR_P( frm, plane[i] );
         pic->img.stride[i] = AVS_GET_PITCH_P( frm, plane[i] );
+
+        if( h->uc_depth )
+        {
+            /* upconvert non 16bit high depth planes to 16bit using the same
+             * algorithm as used in the depth filter. */
+            uint16_t *plane_data = (uint16_t*)pic->img.plane[i];
+            int plane_height = h->func.avs_get_height_p( frm, plane[i] );
+            uint64_t pixel_count = pic->img.stride[i] / h->cmp_size * plane_height;
+            int lshift = 16 - h->bit_depth;
+            for( uint64_t j = 0; j < pixel_count; j++ )
+                plane_data[j] = plane_data[j] << lshift;
+        }
     }
     return 0;
 }
