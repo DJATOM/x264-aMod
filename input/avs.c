@@ -26,19 +26,17 @@
 
 #include "input.h"
 
-#if USE_AVXSYNTH
-#include <dlfcn.h>
-#if SYS_MACOSX
-#define avs_open() dlopen( "libavxsynth.dylib", RTLD_NOW )
-#else
-#define avs_open() dlopen( "libavxsynth.so", RTLD_NOW )
-#endif
-#define avs_close dlclose
-#define avs_address dlsym
-#else
-#define avs_open() LoadLibraryW( L"avisynth" )
+#ifdef _WIN32
+typedef WCHAR libp_t;
+#define avs_open(library) LoadLibraryW( (LPWSTR)library )
 #define avs_close FreeLibrary
 #define avs_address GetProcAddress
+#else
+typedef char libp_t;
+#include <dlfcn.h>
+#define avs_open(library) dlopen( library, RTLD_GLOBAL | RTLD_LAZY | RTLD_NOW )
+#define avs_close dlclose
+#define avs_address dlsym
 #endif
 
 #define AVSC_NO_DECLSPEC
@@ -82,6 +80,7 @@ typedef struct
 {
     AVS_Clip *clip;
     AVS_ScriptEnvironment *env;
+    libp_t lib_path;
     void *library;
     int num_frames;
 #if !USE_AVXSYNTH
@@ -127,9 +126,46 @@ typedef struct
 } avs_hnd_t;
 
 /* load the library and functions we require from it */
-static int custom_avs_load_library( avs_hnd_t *h )
+static int custom_avs_load_library( avs_hnd_t *h, cli_input_opt_t *opt )
 {
-    h->library = avs_open();
+#ifdef _WIN32
+    libp_t *library_path= L"avisynth";
+    libp_t *tmp_buf;
+#else
+#if !USE_AVXSYNTH
+#if SYS_MACOSX
+    libp_t *library_path = "libavisynth.dylib";
+#else
+    libp_t *library_path = "libavisynth.so";
+#endif
+#else
+#if SYS_MACOSX
+    libp_t *library_path = "libavxsynth.dylib";
+#else
+    libp_t *library_path = "libavxsynth.so";
+#endif
+#endif
+#endif
+    if( opt->frameserver_lib_path )
+    {
+#ifdef _WIN32
+        int size_needed = MultiByteToWideChar( CP_UTF8, 0, opt->frameserver_lib_path, -1, NULL, 0 );
+        tmp_buf = malloc( size_needed * sizeof(libp_t) );
+        MultiByteToWideChar( CP_UTF8, 0, opt->frameserver_lib_path, -1, (LPWSTR)tmp_buf, size_needed );
+        library_path = tmp_buf;
+#else
+        library_path = opt->frameserver_lib_path;
+#endif
+        x264_cli_log( "avs", X264_LOG_INFO, "using external Avisynth library from %s\n", opt->frameserver_lib_path );
+    }
+
+    h->library = avs_open(library_path);
+#ifdef _WIN32
+    if( opt->frameserver_lib_path )
+    {
+        free( tmp_buf );
+    }
+#endif
     if( !h->library )
         return -1;
     LOAD_AVS_FUNC( avs_clip_get_error, 0 );
@@ -311,7 +347,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     avs_hnd_t *h = calloc( 1, sizeof(avs_hnd_t) );
     if( !h )
         return -1;
-    FAIL_IF_ERROR( custom_avs_load_library( h ), "failed to load avisynth\n" );
+    FAIL_IF_ERROR( custom_avs_load_library( h, opt ), "failed to load avisynth\n" );
     h->env = h->func.avs_create_script_environment( AVS_INTERFACE_25 );
     if( h->func.avs_get_error )
     {
