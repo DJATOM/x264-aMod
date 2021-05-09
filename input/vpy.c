@@ -371,13 +371,12 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
         const VSFormat *fi = h->vsapi->getFrameFormat( pic->opaque );
         pic->img.stride[i] = h->vsapi->getStride( pic->opaque, planes[i] );
         const uint8_t *readPtr = h->vsapi->getReadPtr( pic->opaque, planes[i] );
-        int rowSize = h->vsapi->getFrameWidth( pic->opaque, planes[i]) * fi->bytesPerSample;
         int height = h->vsapi->getFrameHeight( pic->opaque, planes[i] );
 
         /* We have to explicitly copy frames or weird artifacts might appear.
          * Also allocating plane's memory here. */
         pic->img.plane[i] = (uint8_t *)x264_malloc( pic->img.stride[i] * height );
-        vs_bitblt( pic->img.plane[i], rowSize, readPtr, pic->img.stride[i], rowSize, height );
+        memcpy( pic->img.plane[i], readPtr, pic->img.stride[i] * height );
 
         if( h->uc_depth )
         {
