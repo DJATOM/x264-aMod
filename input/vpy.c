@@ -328,9 +328,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
 static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
 {
-    /* Use "no-allocation" variant of picture init function,
-     * we will allocate desired amount of memory later. */
-    if( x264_cli_pic_init_noalloc( pic, X264_CSP_NONE, width, height ) )
+    if( x264_cli_pic_alloc( pic, X264_CSP_NONE, width, height ) )
         return -1;
     pic->img.csp = csp;
     const x264_cli_csp_t *cli_csp = x264_cli_get_csp( csp );
@@ -370,21 +368,14 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     {
         const VSFormat *fi = h->vsapi->getFrameFormat( pic->opaque );
         pic->img.stride[i] = h->vsapi->getStride( pic->opaque, planes[i] );
-        const uint8_t *readPtr = h->vsapi->getReadPtr( pic->opaque, planes[i] );
-        int height = h->vsapi->getFrameHeight( pic->opaque, planes[i] );
-
-        /* We have to explicitly copy frames or weird artifacts might appear.
-         * Also allocating plane's memory here. */
-        pic->img.plane[i] = (uint8_t *)x264_malloc( pic->img.stride[i] * height );
-        memcpy( pic->img.plane[i], readPtr, pic->img.stride[i] * height );
+        pic->img.plane[i] = (uint8_t*)h->vsapi->getReadPtr( pic->opaque, planes[i] );
 
         if( h->uc_depth )
         {
             /* Upconvert non 16-bit high depth planes to 16-bit
              * using the same algorithm as in the depth filter. */
             uint16_t *plane = (uint16_t*)pic->img.plane[i];
-            /* Real pixel count sometimes is not equal to "width * height" value,
-             * we rely on "stride / bytes_per_sample * height" instead. */
+            int height = h->vsapi->getFrameHeight( pic->opaque, planes[i] );
             int pixel_count = pic->img.stride[i] / fi->bytesPerSample * height;
             int lshift = 16 - h->bit_depth;
             for( uint64_t j = 0; j < pixel_count; j++ )
@@ -424,7 +415,7 @@ static int release_frame( cli_pic_t *pic, hnd_t handle )
 
 static void picture_clean( cli_pic_t *pic, hnd_t handle )
 {
-    x264_cli_pic_clean( pic );
+    memset( pic, 0, sizeof(cli_pic_t) );
 }
 
 static int close_file( hnd_t handle )
