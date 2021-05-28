@@ -52,18 +52,45 @@ typedef WCHAR libp_t;
 #define vs_sleep() Sleep(500)
 #define vs_strtok strtok_s
 #define vs_sscanf sscanf_s
-#define CloseEvent CloseHandle
+#define CREATE_FRAMEDONE_EVENTS() \
+h->async_frame_done_event = (HANDLE*)malloc(h->num_frames * sizeof(h->async_frame_done_event)); \
+for (int i = h->async_start_frame; i < h->num_frames; i++) \
+{ \
+    if ( NULL == (h->async_frame_done_event[i] = CreateEvent(NULL, FALSE, FALSE, NULL)) ) \
+        FAIL_IF_ERROR( 1, "failed to create async event for frame %d\n", i ); \
+}
+#define WAIT_FOR_COMPETED_FRAME(frame) WaitForSingleObject( h->async_frame_done_event[frame], INFINITE );
+#define CLOSE_FRAMEDONE_EVENTS()\
+for ( int i = h->async_start_frame; i < h->num_frames; i++ ) \
+{ \
+    if ( h->async_frame_done_event[i] ) \
+        CloseHandle( h->async_frame_done_event[i] ); \
+} \
+if( h->async_frame_done_event ) \
+    free( h->async_frame_done_event );
 #else
 typedef char libp_t;
 #include <dlfcn.h>
 #include <unistd.h>
 #include <ctype.h>
-#define avs_open(library) dlopen( library, RTLD_GLOBAL | RTLD_LAZY | RTLD_NOW )
-#define avs_close dlclose
-#define avs_address dlsym
+#define vs_open(library) dlopen( library, RTLD_GLOBAL | RTLD_LAZY | RTLD_NOW )
+#define vs_close dlclose
+#define vs_address dlsym
 #define vs_sleep() usleep(500)
 #define vs_strtok strtok_r
 #define vs_sscanf sscanf
+#ifndef min
+#define min(a,b) (((a) < (b)) ? (a) : (b))
+#endif
+#define CREATE_FRAMEDONE_EVENTS() \
+for (int i = h->async_start_frame; i < h->num_frames; i++) \
+{\
+    h->async_buffer[i] = NULL;\
+}
+#define WAIT_FOR_COMPETED_FRAME(frame) \
+while(h->async_buffer[frame] == NULL) \
+    usleep(250);
+#define CLOSE_FRAMEDONE_EVENTS()
 #endif
 
 #define DECLARE_VS_FUNC(name) func_##name name
@@ -95,7 +122,9 @@ typedef struct VapourSynthContext {
     atomic_int async_completed;
     atomic_int async_consumed;
     atomic_int async_pending;
+#ifdef _WIN32
     HANDLE *async_frame_done_event;
+#endif
     int async_requests;
     int async_start_frame;
     const VSFrameRef **async_buffer;
@@ -180,7 +209,9 @@ static void VS_CC async_callback( void *user_data, const VSFrameRef *f, int n, V
         h->async_buffer[n] = f;
 
     atomic_fetch_sub( &h->async_pending, 1 );
+#ifdef _WIN32
     SetEvent( h->async_frame_done_event[n] );
+#endif
 }
 
 /* Slightly modified rigaya's VersionString parser. */
@@ -284,13 +315,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
     h->async_requests = core_info->numThreads;
     h->async_buffer = (const VSFrameRef **)malloc(h->num_frames * sizeof(const VSFrameRef *));
-    h->async_frame_done_event = (HANDLE*)malloc(h->num_frames * sizeof(h->async_frame_done_event));
 
-    /* Set all frame event handles into "waiting" state. */
-    for (int i = h->async_start_frame; i < h->num_frames; i++) {
-        if ( NULL == (h->async_frame_done_event[i] = CreateEvent(NULL, FALSE, FALSE, NULL)) )
-            FAIL_IF_ERROR( 1, "failed to create async event for frame %d\n", i );
-    }
+    CREATE_FRAMEDONE_EVENTS()
 
     const int intital_request_size = min(h->async_requests, h->num_frames - h->async_start_frame);
     h->async_requested = h->async_start_frame + intital_request_size;
@@ -348,7 +374,7 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     if( h->async_failed_frame >= i_frame )
         return -1;
 
-    WaitForSingleObject( h->async_frame_done_event[i_frame], INFINITE );
+    WAIT_FOR_COMPETED_FRAME(i_frame)
     if( !h->async_buffer[i_frame] )
         return -1;
     pic->opaque = (VSFrameRef*)h->async_buffer[i_frame];
@@ -440,15 +466,7 @@ static int close_file( hnd_t handle )
     if( h->async_buffer )
         free( h->async_buffer );
 
-    /* Event handles should be closed. */
-    for ( int i = h->async_start_frame; i < h->num_frames; i++ )
-    {
-        if ( h->async_frame_done_event[i] )
-            CloseEvent( h->async_frame_done_event[i] );
-    }
-
-    if( h->async_frame_done_event )
-        free( h->async_frame_done_event );
+    CLOSE_FRAMEDONE_EVENTS()
 
     h->vsapi->freeNode( h->node );
     h->func.vsscript_freeScript( h->script );
