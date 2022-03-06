@@ -35,8 +35,8 @@ typedef intptr_t atomic_int;
 #else
 #include <stdatomic.h>
 #endif
-#include "extras/VSScript.h"
-#include "extras/VSHelper.h"
+#include "extras/VSScript4.h"
+#include "extras/VSHelper4.h"
 
 #ifdef _M_IX86
 #define VPY_X64 0
@@ -93,31 +93,17 @@ while(h->async_buffer[frame] == NULL) \
 #define CLOSE_FRAMEDONE_EVENTS()
 #endif
 
-#define DECLARE_VS_FUNC(name) func_##name name
-
-#define LOAD_VS_FUNC(name, namex86)\
-{\
-    h->func.name = (void*)vs_address( h->library, (VPY_X64) ? #name : namex86 );\
-    if( !h->func.name )\
-        goto fail;\
-}
-
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "vpy", __VA_ARGS__ )
 
-typedef int (VS_CC *func_vsscript_init)(void);
-typedef int (VS_CC *func_vsscript_finalize)(void);
-typedef int (VS_CC *func_vsscript_evaluateFile)(VSScript **handle, const char *scriptFilename, int flags);
-typedef void (VS_CC *func_vsscript_freeScript)(VSScript *handle);
-typedef const char * (VS_CC *func_vsscript_getError)(VSScript *handle);
-typedef VSNodeRef * (VS_CC *func_vsscript_getOutput)(VSScript *handle, int index);
-typedef VSCore * (VS_CC *func_vsscript_getCore)(VSScript *handle);
-typedef const VSAPI * (VS_CC *func_vsscript_getVSApi2)(int version);
+typedef const VSSCRIPTAPI * (VS_CC *type_getVSScriptAPI)(int version);
 
 typedef struct VapourSynthContext {
     void *library;
+    type_getVSScriptAPI func_getVSScriptAPI;
+    const VSSCRIPTAPI* vssapi;
     const VSAPI *vsapi;
     VSScript *script;
-    VSNodeRef *node;
+    VSNode *node;
     atomic_int async_requested;
     atomic_int async_completed;
     atomic_int async_consumed;
@@ -127,7 +113,7 @@ typedef struct VapourSynthContext {
 #endif
     int async_requests;
     int async_start_frame;
-    const VSFrameRef **async_buffer;
+    const VSFrame **async_buffer;
     int async_failed_frame;
     int num_frames;
     int bit_depth;
@@ -137,17 +123,6 @@ typedef struct VapourSynthContext {
     uint64_t timebase_den;
     int64_t current_timecode_num;
     int64_t current_timecode_den;
-    struct
-    {
-        DECLARE_VS_FUNC( vsscript_init );
-        DECLARE_VS_FUNC( vsscript_finalize );
-        DECLARE_VS_FUNC( vsscript_evaluateFile );
-        DECLARE_VS_FUNC( vsscript_freeScript );
-        DECLARE_VS_FUNC( vsscript_getError );
-        DECLARE_VS_FUNC( vsscript_getOutput );
-        DECLARE_VS_FUNC( vsscript_getCore );
-        DECLARE_VS_FUNC( vsscript_getVSApi2 );
-    } func;
 } VapourSynthContext;
 
 static int custom_vs_load_library( VapourSynthContext *h, cli_input_opt_t *opt )
@@ -183,22 +158,12 @@ static int custom_vs_load_library( VapourSynthContext *h, cli_input_opt_t *opt )
 #endif
     if( !h->library )
         return -1;
-    LOAD_VS_FUNC( vsscript_init, "_vsscript_init@0" );
-    LOAD_VS_FUNC( vsscript_finalize, "_vsscript_finalize@0" );
-    LOAD_VS_FUNC( vsscript_evaluateFile, "_vsscript_evaluateFile@12" );
-    LOAD_VS_FUNC( vsscript_freeScript, "_vsscript_freeScript@4" );
-    LOAD_VS_FUNC( vsscript_getError, "_vsscript_getError@4" );
-    LOAD_VS_FUNC( vsscript_getOutput, "_vsscript_getOutput@8" );
-    LOAD_VS_FUNC( vsscript_getCore, "_vsscript_getCore@4" );
-    LOAD_VS_FUNC( vsscript_getVSApi2, "_vsscript_getVSApi2@4" );
+    h->func_getVSScriptAPI = (void*)vs_address( h->library, "getVSScriptAPI" );
+    FAIL_IF_ERROR( !h->func_getVSScriptAPI, "failed to load getVSScriptAPI function. Upgrade Vapoursynth to R55 or never!\n" );
     return 0;
-fail:
-    vs_close( h->library );
-    h->library = NULL;
-    return -1;
 }
 
-static void VS_CC async_callback( void *user_data, const VSFrameRef *f, int n, VSNodeRef *node, const char *error_msg )
+static void VS_CC async_callback( void *user_data, const VSFrame *f, int n, VSNode *node, const char *error_msg )
 {
     VapourSynthContext *h = user_data;
 
@@ -212,6 +177,25 @@ static void VS_CC async_callback( void *user_data, const VSFrameRef *f, int n, V
 #ifdef _WIN32
     SetEvent( h->async_frame_done_event[n] );
 #endif
+}
+
+int vs_to_x264_log_level( int msgType )
+{
+    switch (msgType)
+    {
+        case mtDebug: return X264_LOG_DEBUG;
+        case mtInformation: return X264_LOG_INFO;
+        case mtWarning: return X264_LOG_WARNING;
+        case mtCritical: return X264_LOG_WARNING;
+        case mtFatal: return X264_LOG_ERROR;
+        default: return X264_LOG_DEBUG;
+    }
+}
+
+void VS_CC log_message_handler( int msgType, const char* msg, void* userData )
+{
+    (void)userData;
+    x264_cli_log( "vpy", vs_to_x264_log_level( msgType ), "%s\n", msg );
 }
 
 /* Slightly modified rigaya's VersionString parser. */
@@ -246,19 +230,25 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( !h )
         return -1;
     FAIL_IF_ERROR( custom_vs_load_library( h, opt ), "failed to load VapourSynth\n" );
-    if( !h->func.vsscript_init() )
-        FAIL_IF_ERROR( 1, "failed to initialize VapourSynth environment\n" );
-    h->vsapi = h->func.vsscript_getVSApi2( VAPOURSYNTH_API_VERSION );
-    FAIL_IF_ERROR( !h->vsapi, "failed to get vapoursynth API\n" );
-    if( h->func.vsscript_evaluateFile( &h->script, (const char *)psz_filename, efSetWorkingDir ) )
-        FAIL_IF_ERROR( 1, "Can't evaluate script: %s\n",  h->func.vsscript_getError( h->script ) );
-    h->node = h->func.vsscript_getOutput( h->script, 0 );
-    FAIL_IF_ERROR( !h->node, "`%s' has no video data\n", psz_filename );
+    h->vssapi = h->func_getVSScriptAPI( VSSCRIPT_API_VERSION );
+    FAIL_IF_ERROR( !h->vssapi, "failed to initialize VSScript\n" );
+    h->vsapi = h->vssapi->getVSAPI( VAPOURSYNTH_API_VERSION );
+    FAIL_IF_ERROR( !h->vsapi, "failed to initialize VSScript\n" );
+    VSCore *core = h->vsapi->createCore( 0 );
+    h->vsapi->addLogHandler( log_message_handler, NULL, NULL, core );
+    h->script = h->vssapi->createScript( core );
+    h->vssapi->evalSetWorkingDir( h->script, 1);
+    h->vssapi->evaluateFile( h->script, (const char *)psz_filename );
+    if( h->vssapi->getError( h->script ) )
+        FAIL_IF_ERROR( 1, "Can't evaluate script: %s\n",  h->vssapi->getError( h->script ) );
+    h->node = h->vssapi->getOutputNode( h->script, 0 );
+    FAIL_IF_ERROR( !h->node || h->vsapi->getNodeType( h->node ) != mtVideo, "`%s' has no video data\n", psz_filename );
 
-    const VSCoreInfo *core_info = h->vsapi->getCoreInfo( h->func.vsscript_getCore( h->script ) );
+    VSCoreInfo core_info;
+    h->vsapi->getCoreInfo( h->vssapi->getCore(h->script), &core_info );
     const VSVideoInfo *vi = h->vsapi->getVideoInfo( h->node );
-    FAIL_IF_ERROR( !isConstantFormat(vi), "only constant video formats are supported\n" );
-    x264_cli_log( "vpy", X264_LOG_INFO, "VapourSynth Video Processing Library Core R%d\n", get_core_revision( core_info->versionString ) );
+    FAIL_IF_ERROR( !vsh_isConstantVideoFormat(vi), "only constant video formats are supported\n" );
+    x264_cli_log( "vpy", X264_LOG_INFO, "VapourSynth Video Processing Library Core R%d\n", get_core_revision( core_info.versionString ) );
     info->width = vi->width;
     info->height = vi->height;
     info->vfr = h->vfr = 0;
@@ -273,20 +263,20 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     }
 
     char errbuf[256];
-    const VSFrameRef *frame0 = NULL;
+    const VSFrame *frame0 = NULL;
     frame0 = h->vsapi->getFrame( h->async_completed, h->node, errbuf, sizeof(errbuf) );
     FAIL_IF_ERROR( !frame0, "%s occurred while getting frame %d\n", h->async_completed, errbuf );
-    const VSMap *props = h->vsapi->getFramePropsRO( frame0 );
+    const VSMap *props = h->vsapi->getFramePropertiesRO( frame0 );
     int err_sar_num, err_sar_den;
-    int64_t sar_num = h->vsapi->propGetInt( props, "_SARNum", 0, &err_sar_num );
-    int64_t sar_den = h->vsapi->propGetInt( props, "_SARDen", 0, &err_sar_den );
+    int64_t sar_num = h->vsapi->mapGetInt( props, "_SARNum", 0, &err_sar_num );
+    int64_t sar_den = h->vsapi->mapGetInt( props, "_SARDen", 0, &err_sar_den );
     info->sar_height = sar_den;
     info->sar_width  = sar_num;
     if( vi->fpsNum == 0 && vi->fpsDen == 0 ) {
         /* There are no FPS data with native VFR videos, so let's grab it from first frame. */
         int err_num, err_den;
-        int64_t fps_num = h->vsapi->propGetInt( props, "_DurationNum", 0, &err_num );
-        int64_t fps_den = h->vsapi->propGetInt( props, "_DurationDen", 0, &err_den );
+        int64_t fps_num = h->vsapi->mapGetInt( props, "_DurationNum", 0, &err_num );
+        int64_t fps_den = h->vsapi->mapGetInt( props, "_DurationDen", 0, &err_den );
         FAIL_IF_ERROR( (err_num || err_den), "missing FPS values at frame 0" );
         FAIL_IF_ERROR( !fps_den, "FPS denominator is zero at frame 0" );
         info->fps_num = fps_den;
@@ -308,13 +298,13 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     h->vsapi->freeFrame( frame0 ); // What a waste, but whatever...
 
     h->num_frames = info->num_frames = vi->numFrames;
-    h->bit_depth = vi->format->bitsPerSample;
+    h->bit_depth = vi->format.bitsPerSample;
     FAIL_IF_ERROR( h->bit_depth < 8 || h->bit_depth > 16, "unsupported bit depth `%d'\n", h->bit_depth );
-    FAIL_IF_ERROR( vi->format->sampleType == stFloat, "unsupported sample type `float'\n" );
+    FAIL_IF_ERROR( vi->format.sampleType == stFloat, "unsupported sample type `float'\n" );
     info->thread_safe = 1;
 
-    h->async_requests = core_info->numThreads;
-    h->async_buffer = (const VSFrameRef **)malloc(h->num_frames * sizeof(const VSFrameRef *));
+    h->async_requests = core_info.numThreads;
+    h->async_buffer = (const VSFrame **)malloc(h->num_frames * sizeof(const VSFrame *));
 
     CREATE_FRAMEDONE_EVENTS()
 
@@ -326,26 +316,30 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         atomic_fetch_add( &h->async_pending, 1 );
     }
 
-    h->uc_depth = (h->bit_depth & 7) && (vi->format->colorFamily == cmYUV || vi->format->colorFamily == cmYCoCg);
+    h->uc_depth = h->bit_depth & 7;
 
-    if( vi->format->id == pfRGB48 )
+    uint32_t format_id = h->vsapi->queryVideoFormatID( vi->format.colorFamily, vi->format.sampleType, vi->format.bitsPerSample, vi->format.subSamplingW, vi->format.subSamplingH, core );
+    if( format_id == pfRGB48 )
         info->csp = X264_CSP_BGR | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
-    else if( vi->format->id == pfRGB24 )
+    else if( format_id == pfRGB24 )
         info->csp = X264_CSP_BGR | X264_CSP_VFLIP;
-    else if( vi->format->id == pfYUV444P9 || vi->format->id == pfYUV444P10 || vi->format->id == pfYUV444P12 || vi->format->id == pfYUV444P14 || vi->format->id == pfYUV444P16)
+    else if( format_id == pfYUV444P9 || format_id == pfYUV444P10 || format_id == pfYUV444P12 || format_id == pfYUV444P14 || format_id == pfYUV444P16)
         info->csp = X264_CSP_I444 | X264_CSP_HIGH_DEPTH;
-    else if( vi->format->id == pfYUV422P9 || vi->format->id == pfYUV422P10 || vi->format->id == pfYUV422P12 || vi->format->id == pfYUV422P14 || vi->format->id == pfYUV422P16)
+    else if( format_id == pfYUV422P9 || format_id == pfYUV422P10 || format_id == pfYUV422P12 || format_id == pfYUV422P14 || format_id == pfYUV422P16)
         info->csp = X264_CSP_I422 | X264_CSP_HIGH_DEPTH;
-    else if( vi->format->id == pfYUV420P9 || vi->format->id == pfYUV420P10 || vi->format->id == pfYUV420P12 || vi->format->id == pfYUV420P14 || vi->format->id == pfYUV420P16)
+    else if( format_id == pfYUV420P9 || format_id == pfYUV420P10 || format_id == pfYUV420P12 || format_id == pfYUV420P14 || format_id == pfYUV420P16)
         info->csp = X264_CSP_I420 | X264_CSP_HIGH_DEPTH;
-    else if( vi->format->id == pfYUV444P8 )
+    else if( format_id == pfYUV444P8 )
         info->csp = X264_CSP_I444;
-    else if( vi->format->id == pfYUV422P8 )
+    else if( format_id == pfYUV422P8 )
         info->csp = X264_CSP_I422;
-    else if( vi->format->id == pfYUV420P8 )
+    else if( format_id == pfYUV420P8 )
         info->csp = X264_CSP_I420;
-    else
-        FAIL_IF_ERROR( 1, "not supported pixel type: %s\n", vi->format->name );
+    else {
+        char format_name[32];
+        h->vsapi->getVideoFormatName( &vi->format, format_name );
+        FAIL_IF_ERROR( 1, "not supported pixel type: %s\n", format_name );
+    }
 
     *p_handle = h;
 
@@ -377,7 +371,7 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     WAIT_FOR_COMPETED_FRAME(i_frame)
     if( !h->async_buffer[i_frame] )
         return -1;
-    pic->opaque = (VSFrameRef*)h->async_buffer[i_frame];
+    pic->opaque = (VSFrame*)h->async_buffer[i_frame];
 
     /* Prefetch subsequent frames. */
     if (h->async_requested < h->num_frames)
@@ -392,7 +386,7 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 
     for( int i = 0; i < pic->img.planes; i++ )
     {
-        const VSFormat *fi = h->vsapi->getFrameFormat( pic->opaque );
+        const VSVideoFormat *fi = h->vsapi->getVideoFrameFormat( pic->opaque );
         pic->img.stride[i] = h->vsapi->getStride( pic->opaque, planes[i] );
         pic->img.plane[i] = (uint8_t*)h->vsapi->getReadPtr( pic->opaque, planes[i] );
 
@@ -414,13 +408,13 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
         /* Adapted from vspipe timecodes generator and lavf.c vfr part. */
         pic->pts = ( h->current_timecode_num * h->timebase_den / h->current_timecode_den ); // hope it will fit
         pic->duration = 0;
-        const VSMap *props = h->vsapi->getFramePropsRO( pic->opaque );
+        const VSMap *props = h->vsapi->getFramePropertiesRO( pic->opaque );
         int err_num, err_den;
-        int64_t duration_num = h->vsapi->propGetInt( props, "_DurationNum", 0, &err_num );
-        int64_t duration_den = h->vsapi->propGetInt( props, "_DurationDen", 0, &err_den );
+        int64_t duration_num = h->vsapi->mapGetInt( props, "_DurationNum", 0, &err_num );
+        int64_t duration_den = h->vsapi->mapGetInt( props, "_DurationDen", 0, &err_den );
         FAIL_IF_ERROR( (err_num || err_den), "missing duration at frame %d", i_frame );
         FAIL_IF_ERROR( !duration_den, "duration denominator is zero at frame %d", i_frame );
-        vs_addRational( &h->current_timecode_num, &h->current_timecode_den, duration_num, duration_den );
+        vsh_addRational( &h->current_timecode_num, &h->current_timecode_den, duration_num, duration_den );
     }
 
     h->vsapi->freeFrame( pic->opaque );
@@ -469,8 +463,7 @@ static int close_file( hnd_t handle )
     CLOSE_FRAMEDONE_EVENTS()
 
     h->vsapi->freeNode( h->node );
-    h->func.vsscript_freeScript( h->script );
-    h->func.vsscript_finalize();
+    h->vssapi->freeScript( h->script );
 
     if( h->library )
         vs_close( h->library );
